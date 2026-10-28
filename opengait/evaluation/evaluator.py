@@ -354,10 +354,36 @@ def evaluate_Gait3D(data, dataset, metric='euc', save_name=None, openset_cfg=Non
     
     probe_lbls = np.asarray(labels)[probe_mask]
     gallery_lbls = np.asarray(labels)[~probe_mask]
-    
+
+    return closed_and_openset(probe_features, gallery_features, probe_lbls, gallery_lbls,
+                              dataset, metric, save_name, openset_cfg)
+
+
+def evaluate_GREW(data, dataset, metric='euc', save_name=None, openset_cfg=None):
+    """Local GREW evaluation (the official probe set is only scored by the remote server).
+
+    Each test ID has one sequence of type '01' and one of type '02' (both official gallery):
+    '01' is used as gallery and '02' as probe. The unlabelled official probe set is ignored.
+    """
+    msg_mgr = get_msg_mgr()
+    features, labels, types = data['embeddings'], np.asarray(data['labels']), np.asarray(data['types'])
+    gallery_mask = (types == '01') & (labels != 'probe')
+    probe_mask = (types == '02') & (labels != 'probe')
+    msg_mgr.log_info(f"GREW local split: {probe_mask.sum()} probes ('02') vs {gallery_mask.sum()} gallery ('01')")
+
+    # legacy10 is specific to the old Gait3D evaluation
+    openset_cfg = {'legacy_split': False, **(openset_cfg or {})}
+    return closed_and_openset(features[probe_mask], features[gallery_mask], labels[probe_mask],
+                              labels[gallery_mask], dataset, metric, save_name, openset_cfg)
+
+
+def closed_and_openset(probe_features, gallery_features, probe_lbls, gallery_lbls,
+                       dataset, metric, save_name, openset_cfg):
+    """Closed-set CMC/mAP on the full gallery + open-set protocol on the same distance matrix."""
+    msg_mgr = get_msg_mgr()
     results = {}
     msg_mgr.log_info(f"The test metric you choose is {metric}.")
-    
+
     # CALCULAMOS RANK 1 CON LOS DATOS COMPLETOS
     dist_full = cuda_dist(probe_features, gallery_features, metric).cpu().numpy()
     cmc, all_AP, all_INP = evaluate_rank(dist_full, probe_lbls, gallery_lbls)
@@ -372,6 +398,11 @@ def evaluate_Gait3D(data, dataset, metric='euc', save_name=None, openset_cfg=Non
     # Open-set protocol (opengait/evaluation/openset.py), reusing the full distance matrix
     os_cfg = {**openset.DEFAULT_CFG, **(openset_cfg or {})}
     os_results = openset.run_protocol(dist_full, probe_lbls, gallery_lbls, os_cfg)
+    if os_cfg['su2024']:
+        os_results.update(openset.run_su2024(
+            probe_features, gallery_features, probe_lbls, gallery_lbls,
+            # embeddings may be float16 (enable_float16) while templates are float32
+            lambda p, g: cuda_dist(np.asarray(p, np.float32), g, metric).cpu().numpy()))
     msg_mgr.log_info('===Open-set===')
     for line in openset.format_summary(os_results):
         msg_mgr.log_info(line)

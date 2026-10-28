@@ -69,6 +69,11 @@ flowchart LR
 
 - **Particiones**: para cada `unknown_ratio` (por defecto 10/30/50 %), `n_splits` (10) conjuntos aleatorios de IDs desconocidos, con semilla fija, tomados de las identidades del probe. Sus secuencias salen de la galería; todos los probes se conservan. Un probe es *conocido* si y solo si su ID sigue en la galería reducida. Además se calcula `legacy10` (último 10 % de IDs ordenados), la partición del código anterior, para comparar con resultados previos.
 - **Regla de decisión**: el probe se acepta si `d_min < τ`, siendo `d_min` la distancia al vecino más cercano de la galería; si se acepta, se identifica con ese vecino. DIR@FPIR=x fija τ para que, como mucho, una fracción x de los probes desconocidos se acepte.
+- **Protocolo `su2024`** (Su et al., ECCV 2024; también LocalScore, arXiv 2602.01012), para comparar con la literatura. Se calcula junto al anterior (`su2024: true` por defecto):
+  - el 21.5 % de las IDs son desconocidas, con 50 particiones;
+  - la galería se reduce a una **plantilla media por identidad** (`subject_templates`), y la distancia probe × plantilla se calcula una sola vez;
+  - FNIR@1 % y 5 % FPIR;
+  - se resume con la mediana (`results['su2024']['median']`) ± std.
 - **Configuración** (opcional, en `evaluator_cfg`):
   ```yaml
   openset_cfg:
@@ -81,5 +86,6 @@ flowchart LR
     output_dir: roc_data
   ```
 - **Salida pkl**: `results[split]` contiene `unknown_ids`, `metrics` y `curves` por partición (curva DIR–FPIR, `d_min`, `is_known`, `correct`, ROC de verificación submuestreada) y `summary` (media, std). También guarda `probe_features`, `gallery_features`, `probe_lbls` y `gallery_lbls` (galería completa), con las mismas claves que los pkl antiguos.
-- Integrado en `evaluate_Gait3D`. SUSTech1K, CCPG y CCGR se conectan al preparar los datos (CU-123nktjx7ym): basta con pasar `dist`, `probe_lbls` y `gallery_lbls` a `run_protocol`.
+- Integrado en `evaluate_Gait3D` y `evaluate_GREW` a través de `closed_and_openset` (cerrado + open-set sobre la misma matriz de distancias). SUSTech1K, CCPG y CCGR se conectan al preparar los datos (CU-123nktjx7ym): basta con pasar `dist`, `probe_lbls` y `gallery_lbls` a `run_protocol`.
+- **GREW local** (`configs/deepgaitv2/DeepGaitV2_grew_openset.yaml`, `eval_func: evaluate_GREW`): el probe oficial solo se puntúa en el servidor remoto, así que se evalúa con la galería oficial, que tiene una secuencia `01` y otra `02` por cada una de las 6000 IDs de test. `01` hace de galería y `02` de probe; un único match por probe. La partición `datasets/GREW/GREW_local_test.json` quita el probe oficial (`probe`) del `TEST_SET` para no extraer sus embeddings. `legacy10` desactivado por defecto.
 - Tests: `python tests/test_openset.py` (embeddings perfectos, aleatorios, DIR@FPIR calculado a mano, ausencia de fugas, reproducibilidad de particiones).

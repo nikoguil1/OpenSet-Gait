@@ -8,7 +8,8 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'opengait'))
-from evaluation.openset import legacy_split, make_splits, run_protocol, split_metrics  # noqa: E402
+from evaluation.openset import (legacy_split, make_splits, run_protocol, run_su2024,  # noqa: E402
+                                split_metrics, subject_templates)
 
 
 def euclidean(x, y):
@@ -87,6 +88,26 @@ def test_run_protocol_summary():
     mean, std = res['u50']['summary']['auroc']
     assert len(res['u50']['metrics']) == 3 and 0 <= mean <= 100 and std >= 0
     assert len(res['legacy10']['metrics']) == 1
+
+
+def test_subject_templates():
+    feats = np.array([[0., 2.], [2., 4.], [10., 10.]])
+    t, ids = subject_templates(feats, ['b', 'b', 'a'])
+    assert list(ids) == ['a', 'b'] and np.allclose(t, [[10, 10], [1, 3]])
+
+
+def test_su2024_protocol():
+    rng = np.random.default_rng(0)
+    centers = rng.normal(size=(200, 16)) * 3
+    probe = centers + rng.normal(scale=0.3, size=centers.shape)
+    gallery = np.repeat(centers, 4, 0) + rng.normal(scale=0.3, size=(800, 16))
+    lbls = np.array([f'{i:03d}' for i in range(200)])
+    res = run_su2024(probe, gallery, lbls, np.repeat(lbls, 4), euclidean)
+    r = res['su2024']
+    assert set(res) == {'su2024'} and len(r['metrics']) == 50
+    assert all(len(u) == 43 for u in r['unknown_ids'])          # round(0.215 * 200)
+    assert all(m['n_known_probes'] == 157 for m in r['metrics'])
+    assert 'fnir@0.05fpir' in r['median'] and r['median']['auroc'] > 99
 
 
 if __name__ == '__main__':
