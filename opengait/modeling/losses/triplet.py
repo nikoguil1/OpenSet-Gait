@@ -22,6 +22,12 @@ class TripletLoss(BaseLoss):
         dist_diff = (ap_dist - an_dist).view(dist.size(0), -1)
         loss = F.relu(dist_diff + self.margin)
 
+        # NGuil: Calculate the average and standard deviation of the ap_distance and an_distance (indicate dimensions)
+        avg_ap_dist = torch.mean(ap_dist, dim=1)[0]
+        std_ap_dist = torch.std(ap_dist, dim=1)[0]
+        avg_an_dist = torch.mean(an_dist, dim=1)[0]
+        std_an_dist = torch.std(an_dist, dim=1)[0]
+
         hard_loss = torch.max(loss, -1)[0]
         loss_avg, loss_num = self.AvgNonZeroReducer(loss)
 
@@ -29,7 +35,11 @@ class TripletLoss(BaseLoss):
             'loss': loss_avg.detach().clone(),
             'hard_loss': hard_loss.detach().clone(),
             'loss_num': loss_num.detach().clone(),
-            'mean_dist': mean_dist.detach().clone()})
+            'mean_dist': mean_dist.detach().clone(),
+            'avg_ap_dist': avg_ap_dist.detach().clone(),
+            'std_ap_dist': std_ap_dist.detach().clone(),
+            'avg_an_dist': avg_an_dist.detach().clone(),
+            'std_an_dist': std_an_dist.detach().clone()})
 
         return loss_avg, self.info
 

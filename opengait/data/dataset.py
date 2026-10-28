@@ -38,6 +38,11 @@ class DataSet(tordata.Dataset):
             if pth.endswith('.pkl'):
                 with open(pth, 'rb') as f:
                     _ = pickle.load(f)
+                # Fix for GREW dataset which sometimes provides (T, 3, H, W)
+                import numpy as np
+                if isinstance(_, np.ndarray):
+                    if len(_.shape) == 4 and _.shape[1] == 3:
+                        _ = _[:, 0, :, :]
                 f.close()
             else:
                 raise ValueError('- Loader - just support .pkl !!!')

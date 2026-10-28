@@ -13,10 +13,15 @@ class SupConLoss_Re(BaseLoss):
         self.train_loss = SupConLoss(temperature=temperature)
 
     @gather_and_scale_wrapper
-    def forward(self, features, labels=None, mask=None):
-        loss = self.train_loss(features, labels)
-        self.info.update({
-            'loss': loss.detach().clone()})
+    def forward(self, embeddings, labels=None, mask=None):
+        loss = self.train_loss(embeddings, labels)
+        
+        info = {'loss': loss.detach().clone()}
+        if hasattr(self.train_loss, 'monitor_info'):
+            for k, v in self.train_loss.monitor_info.items():
+                info[k] = v.detach().clone() if hasattr(v, 'detach') else v
+                
+        self.info.update(info)
         return loss, self.info
 
 
@@ -27,10 +32,35 @@ class SupConLoss_Lp(BaseLoss):
             temperature=temperature, base_temperature=temperature, reduce_zero=True, p=2)
 
     @gather_and_scale_wrapper
-    def forward(self, features, labels=None, mask=None):
-        loss = self.train_loss(features.unsqueeze(1), labels)
-        self.info.update({
-            'loss': loss.detach().clone()})
+    def forward(self, embeddings, labels=None, mask=None):
+        loss = self.train_loss(embeddings.unsqueeze(1), labels)
+        
+        info = {'loss': loss.detach().clone()}
+        if hasattr(self.train_loss, 'monitor_info'):
+            for k, v in self.train_loss.monitor_info.items():
+                info[k] = v.detach().clone() if hasattr(v, 'detach') else v
+                
+        self.info.update(info)
+        return loss, self.info
+
+
+class SupConLoss_Euc(BaseLoss):
+    def __init__(self, temperature=0.01):
+        super(SupConLoss_Euc, self).__init__()
+        # Un-normalized Euclidean distance (Softmax across raw space distances)
+        self.train_loss = SupConLoss(
+            temperature=temperature, base_temperature=temperature, reduce_zero=True, p=2, normalize=False)
+
+    @gather_and_scale_wrapper
+    def forward(self, embeddings, labels=None, mask=None):
+        loss = self.train_loss(embeddings.unsqueeze(1), labels)
+        
+        info = {'loss': loss.detach().clone()}
+        if hasattr(self.train_loss, 'monitor_info'):
+            for k, v in self.train_loss.monitor_info.items():
+                info[k] = v.detach().clone() if hasattr(v, 'detach') else v
+                
+        self.info.update(info)
         return loss, self.info
 
 
@@ -39,13 +69,14 @@ class SupConLoss(nn.Module):
     It also supports the unsupervised contrastive loss in SimCLR"""
 
     def __init__(self, temperature=0.01, contrast_mode='all',
-                 base_temperature=0.07, reduce_zero=False, p=None):
+                 base_temperature=0.07, reduce_zero=False, p=None, normalize=True):
         super(SupConLoss, self).__init__()
         self.temperature = temperature
         self.contrast_mode = contrast_mode
         self.base_temperature = base_temperature
         self.reduce_zero = reduce_zero
         self.p = p
+        self.normalize = normalize
 
     def forward(self, features, labels=None, mask=None):
         """Compute loss for model. If both `labels` and `mask` are None,
@@ -98,16 +129,19 @@ class SupConLoss(nn.Module):
             mat = torch.matmul(
                 anchor_feature, contrast_feature.T)
         else:
-            anchor_feature = torch.nn.functional.normalize(
-                anchor_feature, p=self.p, dim=1)
-            contrast_feature = torch.nn.functional.normalize(
-                contrast_feature, p=self.p, dim=1)
-            mat = -torch.cdist(
-                anchor_feature, contrast_feature, p=self.p)
-        mat = mat/self.temperature
-        # for numerical stability
-        logits_max, _ = torch.max(mat, dim=1, keepdim=True)
-        logits = mat - logits_max.detach()
+            if self.normalize:
+                anchor_feature = torch.nn.functional.normalize(
+                    anchor_feature, p=self.p, dim=1)
+                contrast_feature = torch.nn.functional.normalize(
+                    contrast_feature, p=self.p, dim=1)
+            
+            # Manual Euclidean calculation to avoid torch.cdist NaN gradient at 0
+            x_sq = torch.sum(anchor_feature ** 2, dim=1, keepdim=True)
+            y_sq = torch.sum(contrast_feature ** 2, dim=1, keepdim=True)
+            dist_sq = x_sq + y_sq.T - 2 * torch.matmul(anchor_feature, contrast_feature.T)
+            mat = -torch.sqrt(torch.clamp(dist_sq, min=1e-12))
+            
+        mat = mat / self.temperature
 
         # tile mask
         mask = mask.repeat(anchor_count, contrast_count)
@@ -120,6 +154,12 @@ class SupConLoss(nn.Module):
         )
         mask = mask * logits_mask
 
+        # for numerical stability (ignore self-contrast in max finding)
+        mat_masked = mat.clone()
+        mat_masked[logits_mask == 0] = -1e9
+        logits_max, _ = torch.max(mat_masked, dim=1, keepdim=True)
+        logits = mat - logits_max.detach()
+
         # compute log_prob
         exp_logits = torch.exp(logits) * logits_mask
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
@@ -131,5 +171,22 @@ class SupConLoss(nn.Module):
         loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
         if self.reduce_zero:
             loss = loss[loss > 0]
+
+        # Extract monitoring metrics for Intra-class and Inter-class separation
+        with torch.no_grad():
+            raw_dist = -mat * self.temperature if self.p is not None else mat * self.temperature
+            neg_mask = logits_mask - mask
+            ap_dist = (raw_dist * mask).sum() / (mask.sum() + 1e-9)
+            an_dist = (raw_dist * neg_mask).sum() / (neg_mask.sum() + 1e-9)
+            
+            prob = exp_logits / (exp_logits.sum(1, keepdim=True) + 1e-9)
+            ap_prob = (prob * mask).sum() / (mask.sum() + 1e-9)
+            
+            self.monitor_info = {
+                'ap_dist': ap_dist,
+                'an_dist': an_dist,
+                'ap_prob': ap_prob,
+                'temperature': self.temperature
+            }
 
         return loss.mean()

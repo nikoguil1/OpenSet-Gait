@@ -1,3 +1,19 @@
+# OpenSet-Gait
+
+Evaluación de modelos de reconocimiento por la marcha en escenarios **open-set** (Gait3D, SUSTech1K, CCPG, CCGR). Fork de OpenGait (upstream `f754f6f`); el README original sigue más abajo. Arquitectura y pérdidas: [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Entorno
+
+```bash
+/usr/bin/python3.10 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt   # torch 2.9.1 + CUDA 12.8 (driver >= 560)
+```
+
+Datos en `/home/GAIT_local/SSD_grande`. Los checkpoints y embeddings previos (`output/<dataset>`, `roc_data`) son enlaces a `~/gait/OpenGait` y no se versionan.
+
+---
+
 <img src="./assets/logo2.png" width = "320" height = "110" alt="logo" />
 
 <div align="center"><img src="./assets/nm.gif" width = "100" height = "100" alt="nm" /><img src="./assets/bg.gif" width = "100" height = "100" alt="bg" /><img src="./assets/cl.gif" width = "100" height = "100" alt="cl" /></div>

@@ -271,7 +271,7 @@ class BaseModel(MetaModel, nn.Module):
             else:
                 self.msg_mgr.log_warning(
                     "Restore NO Scheduler from %s !!!" % save_name)
-        self.msg_mgr.log_info("Restore Parameters from %s !!!" % save_name)
+        self.msg_mgr.log_info("Restore Parameters from %s !!!" % osp.abspath(save_name))
 
     def resume_ckpt(self, restore_hint):
         if isinstance(restore_hint, int):

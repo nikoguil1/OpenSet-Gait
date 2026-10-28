@@ -145,3 +145,14 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# OpenSet-Gait: artefactos de experimentos (enlazados a ~/gait/OpenGait, no versionar)
+output/*
+!output/.gitkeep
+roc_data
+GREW_result/
+*.png
+*.pdf
+*_pid.txt
+bhc_paper.txt
+.vscode/

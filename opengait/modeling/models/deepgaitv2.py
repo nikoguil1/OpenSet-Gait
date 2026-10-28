@@ -123,7 +123,7 @@ class DeepGaitV2(BaseModel):
 
         retval = {
             'training_feat': {
-                'triplet': {'embeddings': embed_1, 'labels': labs},
+                'triplet': {'embeddings': embed, 'labels': labs},
                 'softmax': {'logits': logits, 'labels': labs}
             },
             'visual_summary': {
