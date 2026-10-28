@@ -56,7 +56,30 @@ Todas operan por parte (`[p, n, c]`) y se suman a la CE del BNNeck (peso 1.0).
 | `SupConLoss_Euc` | `losses/supconloss.py` | SupCon con distancia euclídea **sin normalizar**, `T = 1`. Distancia calculada a mano (evita el NaN del gradiente de `torch.cdist` en 0). |
 | `CrossEntropyLoss` | `losses/ce.py` | Sobre `logits` del BNNeck, `scale = 16`. |
 
-## 4. Evaluación open-set (estado actual)
+## 4. Evaluación open-set (`opengait/evaluation/openset.py`)
 
-- `evaluate_Gait3D`: Rank-1/5/10, mAP y mINP con la galería completa. Después, el último 10 % de IDs ordenados se quita de la galería como intrusos → EER, TAR@1%FAR y TAR@0.1%FAR sobre todos los pares probe×galería.
-- Pendiente (CU-123nktjx7yk): partición aleatoria repetida, DIR@FPIR, OSCR y AUROC, y salida con nombre por modelo.
+```mermaid
+flowchart LR
+    E["embeddings [N, 256, 16]"] --> D["cuda_dist: probe × galería COMPLETA<br/>(una sola vez)"]
+    D --> C["Cerrado: R1/5/10, mAP, mINP"]
+    D --> S["Por partición: columnas de IDs<br/>desconocidos eliminadas"]
+    S --> M["R1 conocidos · EER, TAR@FAR (pares)<br/>DIR/FNIR@FPIR, OSCR, AUROC (d_min)"]
+    M --> A["media ± std por ratio → log, TensorBoard<br/>roc_data/{dataset}_{save_name}_openset.pkl"]
+```
+
+- **Particiones**: para cada `unknown_ratio` (por defecto 10/30/50 %), `n_splits` (10) conjuntos aleatorios de IDs desconocidos, con semilla fija, tomados de las identidades del probe. Sus secuencias salen de la galería; todos los probes se conservan. Un probe es *conocido* si y solo si su ID sigue en la galería reducida. Además se calcula `legacy10` (último 10 % de IDs ordenados), la partición del código anterior, para comparar con resultados previos.
+- **Regla de decisión**: el probe se acepta si `d_min < τ`, siendo `d_min` la distancia al vecino más cercano de la galería; si se acepta, se identifica con ese vecino. DIR@FPIR=x fija τ para que, como mucho, una fracción x de los probes desconocidos se acepte.
+- **Configuración** (opcional, en `evaluator_cfg`):
+  ```yaml
+  openset_cfg:
+    unknown_ratios: [0.1, 0.3, 0.5]
+    n_splits: 10
+    seed: 0
+    fpir: [0.01, 0.1]
+    far: [0.01, 0.001]
+    legacy_split: true
+    output_dir: roc_data
+  ```
+- **Salida pkl**: `results[split]` contiene `unknown_ids`, `metrics` y `curves` por partición (curva DIR–FPIR, `d_min`, `is_known`, `correct`, ROC de verificación submuestreada) y `summary` (media, std). También guarda `probe_features`, `gallery_features`, `probe_lbls` y `gallery_lbls` (galería completa), con las mismas claves que los pkl antiguos.
+- Integrado en `evaluate_Gait3D`. SUSTech1K, CCPG y CCGR se conectan al preparar los datos (CU-123nktjx7ym): basta con pasar `dist`, `probe_lbls` y `gallery_lbls` a `run_protocol`.
+- Tests: `python tests/test_openset.py` (embeddings perfectos, aleatorios, DIR@FPIR calculado a mano, ausencia de fugas, reproducibilidad de particiones).

@@ -5,6 +5,7 @@ from utils import get_msg_mgr, mkdir
 
 from .metric import mean_iou, cuda_dist, compute_ACC_mAP, evaluate_rank, evaluate_many
 from .re_rank import re_ranking
+from . import openset
 
 def de_diag(acc, each_angle=False):
     # Exclude identical-view cases
@@ -331,7 +332,7 @@ def evaluate_segmentation(data, dataset):
     get_msg_mgr().log_info('mIOU: %.3f' % (miou.mean()))
     return {"scalar/test_accuracy/mIOU": miou}
 
-def evaluate_Gait3D(data, dataset, metric='euc'):
+def evaluate_Gait3D(data, dataset, metric='euc', save_name=None, openset_cfg=None):
     msg_mgr = get_msg_mgr()
 
     features, labels, cams, time_seqs = data['embeddings'], data['labels'], data['types'], data['views']
@@ -368,73 +369,19 @@ def evaluate_Gait3D(data, dataset, metric='euc'):
     results['scalar/test_accuracy/mAP'] = mAP * 100
     results['scalar/test_accuracy/mINP'] = mINP * 100
     
-    # --- Intruder / Open-Set Simulation para VERIFICACIÓN ---
-    # En CASIA-B eliminamos 5 sujetos de 50 en el set de pruebas (10% de las identidades)
-    # Gait3D tiene 1000 identidades en test, por ende, el último 10% (100 sujetos)
-    # actuará como verdaderos impostores. Son eliminados de la galería.
-    unique_test_ids = np.unique(np.asarray(labels))
-    num_intruders = int(len(unique_test_ids) * 0.10) # 10% -> 100 intrusos
-    
-    # Identidades permitidas en la galería (primer 90%)
-    gallery_allowed_ids = unique_test_ids[:-num_intruders] 
-    
-    # Filtramos la galería para excluir a los intrusos SÓLO de la dist matrix de Verificación
-    g_allowed_mask = np.isin(gallery_lbls, gallery_allowed_ids)
-    gallery_features_os = gallery_features[g_allowed_mask]
-    gallery_lbls_os = gallery_lbls[g_allowed_mask]
-    
-    dist_os = cuda_dist(probe_features, gallery_features_os, metric).cpu().numpy()
-    
-    # --- Verification Evaluation ---
-    y_true = (np.reshape(probe_lbls, [-1, 1]) == np.reshape(gallery_lbls_os, [1, -1])).flatten()
-    y_score = -dist_os.flatten()
-    
-    # Extracción de Distancias Mínimas para Graficar Gaussianas
-    min_dists = dist_os.min(axis=1) # El vecino más cercano para cada vector probe contra la galeria recortada
-    is_known = np.isin(probe_lbls, gallery_allowed_ids)
-    
-    # Identidades Conocidas (Genuinas): Distancia mínima a otra muestra de la MISMA identidad en galería
-    y_true_matrix = (np.reshape(probe_lbls, [-1, 1]) == np.reshape(gallery_lbls_os, [1, -1]))
-    dist_genuine = dist_os.copy()
-    dist_genuine[~y_true_matrix] = np.inf
-    min_dists_known_same = dist_genuine[is_known].min(axis=1)
+    # Open-set protocol (opengait/evaluation/openset.py), reusing the full distance matrix
+    os_cfg = {**openset.DEFAULT_CFG, **(openset_cfg or {})}
+    os_results = openset.run_protocol(dist_full, probe_lbls, gallery_lbls, os_cfg)
+    msg_mgr.log_info('===Open-set===')
+    for line in openset.format_summary(os_results):
+        msg_mgr.log_info(line)
+    results.update(openset.to_scalars(os_results))
 
-    dist_genuine_max = dist_os.copy()
-    dist_genuine_max[~y_true_matrix] = -np.inf
-    max_dists_known_same = dist_genuine_max[is_known].max(axis=1)
-    
-    # Intrusos: Distancia mínima al vecino más cercano de galería
-    min_dists_intruder = min_dists[~is_known]
-    
-    from sklearn.metrics import roc_curve
-    fpr, tpr, thresholds = roc_curve(y_true, y_score)
-    fnr = 1 - tpr
-    eer_idx = np.nanargmin(np.absolute((fnr - fpr)))
-    eer = fpr[eer_idx]
-    tar_1 = np.interp(0.01, fpr, tpr)
-    tar_01 = np.interp(0.001, fpr, tpr)
-    
-    msg_mgr.log_info('===Verification===')
-    msg_mgr.log_info(f"Gait3D - EER: {eer*100:.2f}%, TAR@1%FAR: {tar_1*100:.2f}%, TAR@0.1%FAR: {tar_01*100:.2f}%")
-    
-    results['scalar/test_verification/EER'] = eer * 100
-    results['scalar/test_verification/TAR_1FA'] = tar_1 * 100
-    results['scalar/test_verification/TAR_01FA'] = tar_01 * 100
-    
-    try:
-        import os, pickle
-        os.makedirs("roc_data", exist_ok=True)
-        with open("roc_data/embeddings_Gait3D_DeepGaitV2_SunCons_Euc.pkl", "wb") as f:
-            pickle.dump({'FPR': fpr, 'TPR': tpr, 'EER': eer, 'Thresholds': thresholds,
-                         'MinDists_Known_Same': min_dists_known_same, 
-                         'MaxDists_Known_Same': max_dists_known_same,
-                         'MinDists_Intruder': min_dists_intruder,
-                         'probe_features': probe_features,
-                         'gallery_features': gallery_features,
-                         'probe_lbls': probe_lbls,
-                         'gallery_lbls': gallery_lbls}, f)
-    except Exception as e:
-        msg_mgr.log_info(f"Failed to save ROC data: {e}")
+    path = openset.save_results(
+        os_results, dataset, save_name or 'model', os_cfg['output_dir'], metric=metric,
+        probe_features=probe_features, gallery_features=gallery_features,
+        probe_lbls=probe_lbls, gallery_lbls=gallery_lbls)
+    msg_mgr.log_info(f"Open-set results saved to {os.path.abspath(path)}")
 
     # print_csv_format(dataset_name, results)
     msg_mgr.log_info(results)
