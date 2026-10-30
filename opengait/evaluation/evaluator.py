@@ -399,10 +399,16 @@ def closed_and_openset(probe_features, gallery_features, probe_lbls, gallery_lbl
     os_cfg = {**openset.DEFAULT_CFG, **(openset_cfg or {})}
     os_results = openset.run_protocol(dist_full, probe_lbls, gallery_lbls, os_cfg)
     if os_cfg['su2024']:
-        os_results.update(openset.run_su2024(
-            probe_features, gallery_features, probe_lbls, gallery_lbls,
-            # embeddings may be float16 (enable_float16) while templates are float32
-            lambda p, g: cuda_dist(np.asarray(p, np.float32), g, metric).cpu().numpy()))
+        # embeddings may be float16 (enable_float16) while templates are float32
+        dist_fn = lambda x, y, m: cuda_dist(np.asarray(x, np.float32), np.asarray(y, np.float32), m).cpu().numpy()
+        su_sets = openset.load_su2024_splits(dataset, os_cfg['su2024_splits'])
+        msg_mgr.log_info('su2024 non-mated sets: ' + (f'{len(su_sets)} fixed ({os_cfg["su2024_splits"]})'
+                                                      if su_sets is not None else 'random'))
+        for sim in os_cfg['su2024_similarity']:
+            for k in os_cfg['su2024_localscore_k']:
+                os_results.update(openset.run_su2024(
+                    probe_features, gallery_features, probe_lbls, gallery_lbls, dist_fn,
+                    similarity=sim, localscore_k=k, cfg={'unknown_sets': su_sets}))
     msg_mgr.log_info('===Open-set===')
     for line in openset.format_summary(os_results):
         msg_mgr.log_info(line)
