@@ -28,6 +28,8 @@ class DeepGaitV2(BaseModel):
         layers      = model_cfg['Backbone']['layers']
         channels    = model_cfg['Backbone']['channels']
         self.inference_use_emb2 = model_cfg['use_emb2'] if 'use_emb2' in model_cfg else False
+        # feed the embeddings to an OpenSetLoss with log_prefix 'open_set' (Su et al., ECCV 2024)
+        self.open_set_loss = model_cfg.get('open_set_loss', False)
 
         if mode == '3d': 
             strides = [
@@ -133,5 +135,7 @@ class DeepGaitV2(BaseModel):
                 'embeddings': embed
             }
         }
+        if self.open_set_loss:
+            retval['training_feat']['open_set'] = {'embeddings': embed, 'labels': labs}
 
         return retval

@@ -19,6 +19,7 @@ flowchart TD
     BN -->|embed_2| E{"use_emb2?"}
     FC -->|embed_1| E
     E -->|embed| ML["Pérdida métrica<br/>Triplet / BHCn / SupCon"]
+    E -->|"embed (open_set_loss: true)"| OS["OpenSetLoss (IDL + RTM)<br/>simulación open-set en el batch"]
     BN -->|logits| CE["CrossEntropy (scale 16)"]
     E -->|embed| INF["Inferencia: embeddings [n, 256, 16]"]
     INF --> EV["Evaluador: distancia euclídea por partes<br/>cerrado (R1, mAP) + verificación (EER, TAR@FAR)<br/>+ intrusos open-set"]
@@ -40,11 +41,11 @@ Batch del `TripletSampler`: 32 identidades × 4 secuencias → `n = 128`; `s = 3
 | `embed_1` (SeparateFCs) | `[n, 256, 16]` | |
 | `embed_2`, `logits` (BNNecks) | `[n, 256, 16]`, `[n, 3000, 16]` | 3000 IDs de entrenamiento |
 
-`embed = embed_2 if use_emb2 else embed_1` se usa tanto en la pérdida métrica como en la inferencia. Upstream entrenaba la triplet siempre con `embed_1`; en este fork solo cambia con `use_emb2: true` (hoy únicamente `DeepGaitV2_Gait3D_SupCons_Euc.yaml`).
+`embed = embed_2 if use_emb2 else embed_1` se usa tanto en la pérdida métrica como en la inferencia. Upstream entrenaba la triplet siempre con `embed_1`; en este fork solo cambia con `use_emb2: true` (hoy únicamente `DeepGaitV2_Gait3D_SupCons_Euc.yaml`). Con `model_cfg.open_set_loss: true`, el mismo `embed` se entrega además a la pérdida con `log_prefix: open_set`.
 
 ## 3. Funciones de pérdida
 
-Todas operan por parte (`[p, n, c]`) y se suman a la CE del BNNeck (peso 1.0).
+Todas operan por parte (`[p, n, c]`) y se suman a la CE del BNNeck (peso 1.0). `OpenSetLoss` se suma además a la triplet.
 
 | Tipo (`loss_cfg.type`) | Fichero | Definición |
 |---|---|---|
@@ -55,6 +56,7 @@ Todas operan por parte (`[p, n, c]`) y se suman a la CE del BNNeck (peso 1.0).
 | `SupConLoss_Lp` | `losses/supconloss.py` | SupCon con distancia euclídea sobre embeddings normalizados L2, `T = 0.07`. |
 | `SupConLoss_Euc` | `losses/supconloss.py` | SupCon con distancia euclídea **sin normalizar**, `T = 1`. Distancia calculada a mano (evita el NaN del gradiente de `torch.cdist` en 0). |
 | `CrossEntropyLoss` | `losses/ce.py` | Sobre `logits` del BNNeck, `scale = 16`. |
+| `OpenSetLoss` | `losses/open_set.py` | Su et al., ECCV 2024 (port de `prevso1088/open-set-biometrics`). En cada batch, los sujetos se dividen en 4 *folds*; cada fold hace de probes no registrados y el resto aporta una plantilla media (primera mitad de sus secuencias) y probes registrados (segunda mitad). Puntuación `s = 1/(1+d)`. **IDL**: DIR suave = `σ(β·(r − rango_suave))·σ(α·(s_match − θ))`, con cada puntuación no registrada como umbral θ. **RTM**: media ponderada por softmax de las puntuaciones no registradas. `loss = 1 − DIR + λ·RTM` por parte. Gait3D: `α = 6`, `β = 0.2`, `γ = 6` (rango suave), `λ = 4`, `r = 1`. Config: `DeepGaitV2_Gait3D_OpenSetLoss.yaml` (Triplet m=0.2 + CE + OpenSetLoss, peso 1 cada una). |
 
 ## 4. Evaluación open-set (`opengait/evaluation/openset.py`)
 
@@ -90,14 +92,14 @@ flowchart LR
     fpir: [0.01, 0.1]
     far: [0.01, 0.001]
     legacy_split: true
-    output_dir: roc_data
-  ```
     su2024: true
     su2024_similarity: [euc, cos]
     su2024_localscore_k: [0, 1]
     su2024_splits: official   # o ruta a un json {"nonmated_ids": [[...], ...]}, o null (aleatorias)
     dir_ranks: [1]            # su2024: [1, 20]
     threshold_rule: strict    # su2024: su2024
+    output_dir: roc_data
+  ```
 - **Salida pkl**: `results[split]` contiene `unknown_ids`, `metrics` y `curves` por partición (curva DIR–FPIR, `d_min`, `is_known`, `correct`, ROC de verificación submuestreada) y `summary` (media, std). También guarda `probe_features`, `gallery_features`, `probe_lbls` y `gallery_lbls` (galería completa), con las mismas claves que los pkl antiguos.
 - Integrado en `evaluate_Gait3D` y `evaluate_GREW` a través de `closed_and_openset` (cerrado + open-set sobre la misma matriz de distancias). SUSTech1K, CCPG y CCGR se conectan al preparar los datos (CU-123nktjx7ym): basta con pasar `dist`, `probe_lbls` y `gallery_lbls` a `run_protocol`.
 - **GREW local** (`configs/deepgaitv2/DeepGaitV2_grew_openset.yaml`, `eval_func: evaluate_GREW`): el probe oficial solo se puntúa en el servidor remoto, así que se evalúa con la galería oficial, que tiene una secuencia `01` y otra `02` por cada una de las 6000 IDs de test. `01` hace de galería y `02` de probe; un único match por probe. La partición `datasets/GREW/GREW_local_test.json` quita el probe oficial (`probe`) del `TEST_SET` para no extraer sus embeddings. `legacy10` desactivado por defecto.
