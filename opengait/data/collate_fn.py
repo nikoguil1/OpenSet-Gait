@@ -26,6 +26,9 @@ class CollateFn(object):
         if self.sampler == 'unfixed':
             self.frames_num_max = sample_config['frames_num_max']
             self.frames_num_min = sample_config['frames_num_min']
+        # one frames_num per batch and a stacked [b, s, ...] tensor, as Su et al. (ECCV 2024);
+        # otherwise each sequence draws its own and the batch is concatenated with seqL
+        self.frames_num_per_batch = self.sampler == 'unfixed' and sample_config.get('frames_num_per_batch', False)
 
         if self.sampler != 'all' and self.ordered:
             self.frames_skip_num = sample_config['frames_skip_num']
@@ -60,6 +63,8 @@ class CollateFn(object):
             if self.sampler in ['fixed', 'unfixed']:
                 if self.sampler == 'fixed':
                     frames_num = self.frames_num_fixed
+                elif self.frames_num_per_batch:
+                    frames_num = batch_frames_num
                 else:
                     frames_num = random.choice(
                         list(range(self.frames_num_min, self.frames_num_max+1)))
@@ -113,10 +118,13 @@ class CollateFn(object):
         # b: batch_size
         # p: batch_size_per_gpu
         # g: gpus_num
+        if self.frames_num_per_batch:
+            batch_frames_num = random.choice(
+                list(range(self.frames_num_min, self.frames_num_max+1)))
         fras_batch = [sample_frames(seqs) for seqs in seqs_batch]  # [b, f]
         batch = [fras_batch, labs_batch, typs_batch, vies_batch, None]
 
-        if self.sampler == "fixed":
+        if self.sampler == "fixed" or self.frames_num_per_batch:
             fras_batch = [[np.asarray(fras_batch[i][j]) for i in range(batch_size)]
                           for j in range(feature_num)]  # [f, b]
         else:

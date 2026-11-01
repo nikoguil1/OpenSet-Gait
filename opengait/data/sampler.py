@@ -49,6 +49,43 @@ class TripletSampler(tordata.sampler.Sampler):
         return len(self.dataset)
 
 
+class TripletNoRepeatSampler(TripletSampler):
+    """TripletSampler of Su et al., ECCV 2024 (github.com/prevso1088/open-set-biometrics, commit 76ea429).
+
+    Subjects are visited in random order and each one adds up to K sequences without
+    repetition until the batch holds P x K sequences, so subjects with fewer than K
+    sequences are not oversampled and the batch may contain more than P subjects.
+    """
+
+    def __iter__(self):
+        total_batch_size = self.batch_size[0] * self.batch_size[1]
+        while True:
+            sample_indices = []
+            pid_list = sync_random_sample_list(
+                self.dataset.label_set, k=len(self.dataset.label_set))
+            for pid in pid_list:
+                sequences_remaining = total_batch_size - len(sample_indices)
+                if sequences_remaining <= 0:
+                    break
+
+                indices = self.dataset.indices_dict[pid]
+                sequences_to_add = min(sequences_remaining, len(indices), self.batch_size[1])
+                if sequences_to_add > 0:
+                    sample_indices += sync_random_sample_list(indices, k=sequences_to_add)
+
+            if self.batch_shuffle:
+                sample_indices = sync_random_sample_list(
+                    sample_indices, len(sample_indices))
+
+            total_size = int(math.ceil(total_batch_size /
+                                       self.world_size)) * self.world_size
+            sample_indices += sample_indices[:(
+                total_batch_size - len(sample_indices))]
+
+            sample_indices = sample_indices[self.rank:total_size:self.world_size]
+            yield sample_indices
+
+
 def sync_random_sample_list(obj_list, k, common_choice=False):
     if common_choice:
         idx = random.choices(range(len(obj_list)), k=k) 

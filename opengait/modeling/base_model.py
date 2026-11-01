@@ -19,6 +19,7 @@ import torch.utils.data as tordata
 from tqdm import tqdm
 from torch.cuda.amp import autocast
 from torch.cuda.amp import GradScaler
+import timm.scheduler
 from abc import ABCMeta
 from abc import abstractmethod
 
@@ -229,7 +230,7 @@ class BaseModel(MetaModel, nn.Module):
     def get_scheduler(self, scheduler_cfg):
         self.msg_mgr.log_info(scheduler_cfg)
         Scheduler = get_attr_from(
-            [optim.lr_scheduler], scheduler_cfg['scheduler'])
+            [optim.lr_scheduler, timm.scheduler], scheduler_cfg['scheduler'])
         valid_arg = get_valid_args(Scheduler, scheduler_cfg, ['scheduler'])
         scheduler = Scheduler(self.optimizer, **valid_arg)
         return scheduler
@@ -357,7 +358,11 @@ class BaseModel(MetaModel, nn.Module):
             self.optimizer.step()
 
         self.iteration += 1
-        self.scheduler.step()
+        if isinstance(self.scheduler, timm.scheduler.scheduler.Scheduler):
+            # timm schedulers (e.g. CosineLRScheduler) take the step index; t_initial is in iterations
+            self.scheduler.step(self.iteration)
+        else:
+            self.scheduler.step()
         return True
 
     def inference(self, rank):
