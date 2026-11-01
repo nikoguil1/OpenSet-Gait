@@ -28,6 +28,7 @@ flowchart TD
 ## 2. Dimensiones (Gait3D, entrenamiento)
 
 Batch del `TripletSampler`: 32 identidades × 4 secuencias → `n = 128`; `s = 30` frames.
+Con `DeepGaitV2_Gait3D_OpenSetLoss_SuSampler.yaml` (batches de Su et al.): `TripletNoRepeatSampler`, 128 secuencias distintas con hasta 4 por sujeto (≈42 sujetos), y `s` ∈ [10, 50] sorteado una vez por batch (`unfixed_ordered`, `frames_num_per_batch: true`, `seqL = None`). Las shapes de la tabla no cambian salvo `s`.
 
 | Etapa | Shape | Notas |
 |---|---|---|
@@ -89,14 +90,14 @@ Todas operan por parte (`[p, n, c]`) y se suman a la CE del BNNeck (peso 1.0). `
 | Tipo (`loss_cfg.type`) | Fichero | Definición |
 |---|---|---|
 | `TripletLoss` | `losses/triplet.py` | `relu(d_ap − d_an + m)`, `m = 0.2`, media de no-ceros. Registra media/std de `d_ap` y `d_an`. |
-| `TripletLossSu` | `losses/triplet_su.py` | Triplet de Su et al. (port de `prevso1088/open-set-biometrics`): mismas tripletas *batch-all* que `TripletLoss`, pero construidas ancla a ancla, así que admite batches con distinto número de secuencias por sujeto (`TripletNoRepeatSampler`). En batches P×K da la misma pérdida. Opciones `metric` (`euc`/`cos`) y `mining` (`batch_all`/`batch_hard`). Solo en las configs de SwinGait-3D de Su. |
+| `TripletLossSu` | `losses/triplet_su.py` | Triplet de Su et al. (port de `prevso1088/open-set-biometrics`): mismas tripletas *batch-all* que `TripletLoss`, pero construidas ancla a ancla, así que admite batches con distinto número de secuencias por sujeto (`TripletNoRepeatSampler`). En batches P×K da la misma pérdida. Opciones `metric` (`euc`/`cos`) y `mining` (`batch_all`/`batch_hard`). Se usa en las configs de SwinGait-3D de Su y en `DeepGaitV2_Gait3D_OpenSetLoss_SuSampler.yaml`. |
 | `BHCLoss` | `losses/bhc.py` | Batch-hard: `relu(max d_ap − m1) + relu(m2 − min d_an)`; `m1 = 0.2`, `m2 = 0.5` y se duplica cada 20k iteraciones. |
 | `BHCLossV2` | `losses/bhcV2.py` | `relu(d_p) + relu(m − d_n)` con margen fijo `m` (config: 10). |
 | `BHCLossV3` | `losses/bhcV3.py` | Grouped BHCn (ec. 6 de Aljazaerly et al. 2023): pérdidas promediadas entre partes, después hardest positivo/negativo y al cuadrado; `m = 8`, +2 cada 15k iteraciones. |
 | `SupConLoss_Lp` | `losses/supconloss.py` | SupCon con distancia euclídea sobre embeddings normalizados L2, `T = 0.07`. |
 | `SupConLoss_Euc` | `losses/supconloss.py` | SupCon con distancia euclídea **sin normalizar**, `T = 1`. Distancia calculada a mano (evita el NaN del gradiente de `torch.cdist` en 0). |
 | `CrossEntropyLoss` | `losses/ce.py` | Sobre `logits` del BNNeck, `scale = 16`. |
-| `OpenSetLoss` | `losses/open_set.py` | Su et al., ECCV 2024 (port de `prevso1088/open-set-biometrics`). En cada batch, los sujetos se dividen en 4 *folds*; cada fold hace de probes no registrados y el resto aporta una plantilla media (primera mitad de sus secuencias) y probes registrados (segunda mitad). Puntuación `s = 1/(1+d)`. **IDL**: DIR suave = `σ(β·(r − rango_suave))·σ(α·(s_match − θ))`, con cada puntuación no registrada como umbral θ. **RTM**: media ponderada por softmax de las puntuaciones no registradas. `loss = 1 − DIR + λ·RTM` por parte. Gait3D: `α = 6`, `β = 0.2`, `γ = 6` (rango suave), `λ = 4`, `r = 1`. Config: `DeepGaitV2_Gait3D_OpenSetLoss.yaml` (Triplet m=0.2 + CE + OpenSetLoss, peso 1 cada una). SwinGait-3D: `α = γ = 9` y 15 partes, como en su config publicada (la tabla 1 del suplemento dice 6). |
+| `OpenSetLoss` | `losses/open_set.py` | Su et al., ECCV 2024 (port de `prevso1088/open-set-biometrics`). En cada batch, los sujetos se dividen en 4 *folds*; cada fold hace de probes no registrados y el resto aporta una plantilla media (primera mitad de sus secuencias) y probes registrados (segunda mitad). Puntuación `s = 1/(1+d)`. **IDL**: DIR suave = `σ(β·(r − rango_suave))·σ(α·(s_match − θ))`, con cada puntuación no registrada como umbral θ. **RTM**: media ponderada por softmax de las puntuaciones no registradas. `loss = 1 − DIR + λ·RTM` por parte. Gait3D: `α = 6`, `β = 0.2`, `γ = 6` (rango suave), `λ = 4`, `r = 1`. Config: `DeepGaitV2_Gait3D_OpenSetLoss.yaml` (Triplet m=0.2 + CE + OpenSetLoss, peso 1 cada una); `DeepGaitV2_Gait3D_OpenSetLoss_SuSampler.yaml` igual pero con los batches de Su (`TripletNoRepeatSampler` + `TripletLossSu`, 10–50 frames ordenados). SwinGait-3D: `α = γ = 9` y 15 partes, como en su config publicada (la tabla 1 del suplemento dice 6). |
 
 ## 4. Evaluación open-set (`opengait/evaluation/openset.py`)
 
