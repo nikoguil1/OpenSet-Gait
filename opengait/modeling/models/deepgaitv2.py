@@ -1,5 +1,8 @@
+import contextlib
+
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint
 
 import os
 import numpy as np
@@ -17,6 +20,27 @@ blocks_map = {
     '3d': BasicBlock3D
 }
 
+
+@contextlib.contextmanager
+def frozen_bn_stats(module):
+    """Momentum 0 in the BatchNorms of module, so the recomputation of a checkpointed
+    segment in backward does not update the running statistics a second time."""
+    bns = [m for m in module.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    momenta = [m.momentum for m in bns]
+    for m in bns:
+        m.momentum = 0.
+    try:
+        yield
+    finally:
+        for m, mom in zip(bns, momenta):
+            m.momentum = mom
+
+
+def run_checkpointed(module, x):
+    """Gradient checkpointing of module (same gradients and BN statistics, less memory)."""
+    return checkpoint.checkpoint(module, x, use_reentrant=False,
+                                 context_fn=lambda: (contextlib.nullcontext(), frozen_bn_stats(module)))
+
 class DeepGaitV2(BaseModel):
 
     def build_network(self, model_cfg):
@@ -30,6 +54,8 @@ class DeepGaitV2(BaseModel):
         self.inference_use_emb2 = model_cfg['use_emb2'] if 'use_emb2' in model_cfg else False
         # feed the embeddings to an OpenSetLoss with log_prefix 'open_set' (Su et al., ECCV 2024)
         self.open_set_loss = model_cfg.get('open_set_loss', False)
+        # gradient checkpointing of layer0, layer1 and each block of layer2-4 (training only)
+        self.use_checkpoint = model_cfg['Backbone'].get('use_checkpoint', False)
 
         if mode == '3d': 
             strides = [
@@ -103,11 +129,17 @@ class DeepGaitV2(BaseModel):
         assert sils.size(-1) in [44, 88]
 
         del ipts
-        out0 = self.layer0(sils)
-        out1 = self.layer1(out0)
-        out2 = self.layer2(out1)
-        out3 = self.layer3(out2)
-        out4 = self.layer4(out3) # [n, c, s, h, w]
+        if self.use_checkpoint and self.training:
+            out4 = sils
+            layers = [self.layer0, self.layer1, self.layer2, self.layer3, self.layer4]
+            for segment in [b for l in layers for b in (l if isinstance(l, nn.Sequential) else [l])]:
+                out4 = run_checkpointed(segment, out4)
+        else:
+            out0 = self.layer0(sils)
+            out1 = self.layer1(out0)
+            out2 = self.layer2(out1)
+            out3 = self.layer3(out2)
+            out4 = self.layer4(out3) # [n, c, s, h, w]
 
         # Temporal Pooling, TP
         outs = self.TP(out4, seqL, options={"dim": 2})[0]  # [n, c, h, w]

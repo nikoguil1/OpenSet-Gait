@@ -28,7 +28,7 @@ flowchart TD
 ## 2. Dimensiones (Gait3D, entrenamiento)
 
 Batch del `TripletSampler`: 32 identidades × 4 secuencias → `n = 128`; `s = 30` frames.
-Con `DeepGaitV2_Gait3D_OpenSetLoss_SuSampler.yaml` (batches de Su et al.): `TripletNoRepeatSampler`, 128 secuencias distintas con hasta 4 por sujeto (≈42 sujetos), y `s` ∈ [10, 50] sorteado una vez por batch (`unfixed_ordered`, `frames_num_per_batch: true`, `seqL = None`). Las shapes de la tabla no cambian salvo `s`.
+Con `DeepGaitV2_Gait3D_OpenSetLoss_SuSampler.yaml` (batches de Su et al.): `TripletNoRepeatSampler`, 128 secuencias distintas con hasta 4 por sujeto (≈42 sujetos), y `s` ∈ [10, 50] sorteado una vez por batch (`unfixed_ordered`, `frames_num_per_batch: true`, `seqL = None`). Las shapes de la tabla no cambian salvo `s`. Con 32 secuencias × 50 frames por GPU no cabe en 24 GB, así que usa `Backbone.use_checkpoint: true`: gradient checkpointing en entrenamiento de `layer0`, `layer1` y cada bloque de `layer2`–`layer4`. Los gradientes son los mismos, y la recomputación se hace con momentum 0 en las BN para no actualizar dos veces sus estadísticas. Pico de unos 8–14 GB por GPU.
 
 | Etapa | Shape | Notas |
 |---|---|---|

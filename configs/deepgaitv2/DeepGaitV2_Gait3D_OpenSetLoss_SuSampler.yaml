@@ -4,6 +4,7 @@
 # up to 4 per subject) and loss TripletLossSu (accepts subjects with fewer than K sequences); frames
 # unfixed_ordered 10-50 with one length per batch (they use unfixed_unordered for the 2D GaitBase,
 # ordered here because DeepGaitV2 has 3D convolutions) and frames_skip_num: 0 as in their SwinGait.
+# Gradient checkpointing (use_checkpoint): 32 sequences x 50 frames per GPU do not fit in 24 GB.
 data_cfg:
   dataset_name: Gait3D
   dataset_root: /home/nico/gait/datasets/Gait3D/Gait3D-pkls/Gait3D-sils-64-44-pkl
@@ -55,6 +56,7 @@ model_cfg:
   Backbone:
     in_channels: 1
     mode: p3d
+    use_checkpoint: true # same gradients, fits 50 frames in 24 GB
     layers: 
       - 1
       - 4
