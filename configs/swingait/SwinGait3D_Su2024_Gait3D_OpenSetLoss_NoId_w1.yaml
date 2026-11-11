@@ -1,0 +1,125 @@
+# [EXP] OpenSetLoss sin identificación: SwinGait3D_Su2024_Gait3D_OpenSetLoss.yaml (E4.1) without S_id in the IDL
+# (identification: false, only the detection term sigma_alpha(s_match - theta)) and detection weighted by det_weight = 1.
+# Everything else (data, model, sampler, triplet, CE, RTM with lambda = 4, optimizer) is identical to E4.1.
+# SwinGait-3D + OpenSetLoss of Su et al., ECCV 2024 (arXiv 2407.16133), ported from their
+# configs/swingait_gait3d_open_set.yaml (github.com/prevso1088/open-set-biometrics, commit 76ea429).
+# Changes: our dataset_root / partition, no data_in_use (our pkl folder only holds the 64x44 sils),
+# evaluator batch_size = number of GPUs, model Baseline3D (+ open_set_loss flag), backbone SwinGaitSu,
+# sampler TripletNoRepeatSampler (named so in their config, TripletSampler in their code) and loss
+# TripletLossSu (their TripletLoss, which accepts subjects with fewer than K sequences),
+# frames_num_per_batch: true (their collate draws one length per batch), with_test: false,
+# use_checkpoint: true (4 GPUs with 32 sequences each instead of their 8 with 16; same results).
+# Baseline without the loss: SwinGait3D_Su2024_Gait3D.yaml (only loss_cfg / open_set_loss / save_name differ).
+data_cfg:
+  dataset_name: Gait3D
+  dataset_root: /home/nico/gait/datasets/Gait3D/Gait3D-pkls/Gait3D-sils-64-44-pkl
+  dataset_partition: ./datasets/Gait3D/Gait3D.json
+  num_workers: 4
+  remove_no_gallery: false # Remove probe if no gallery for it
+  test_dataset_name: Gait3D
+
+evaluator_cfg:
+  enable_float16: true
+  restore_ckpt_strict: true
+  restore_hint: 60000
+  save_name: SwinGait3D_Su2024_OpenSetLoss_NoId_w1
+  eval_func: evaluate_Gait3D
+  sampler:
+    batch_shuffle: false
+    batch_size: 4
+    sample_type: all_ordered # all indicates whole sequence used to test, while ordered means input sequence by its natural order; Other options:   fixed_unordered
+    frames_all_limit: 720 # limit the number of sampled frames to prevent out of memory
+  metric: euc # cos
+  transform:
+    - type: BaseSilTransform
+
+loss_cfg:
+  - loss_term_weight: 1.0
+    margin: 0.2
+    type: TripletLossSu # their triplet: anchor by anchor, for unbalanced batches
+    log_prefix: triplet
+  - loss_term_weight: 1.0
+    scale: 16
+    type: CrossEntropyLoss
+    log_prefix: softmax
+    log_accuracy: true
+  # their published config: alpha = gamma = 9 (Supp. Tab. 1 lists 6 for SwinGait on Gait3D)
+  - loss_term_weight: 1.0
+    type: OpenSetLoss
+    num_folds: 4
+    rank: 1
+    score_scale: 9.0
+    rank_scale: 0.2
+    rank_diff_scale: 9.0
+    rtm_weight: 4.0
+    identification: false # detection only (no soft rank)
+    det_weight: 1.0 # weight of 1 - detection rate
+    num_parts: 15
+    log_prefix: open_set
+
+model_cfg:
+  model: Baseline3D
+  backbone_cfg:
+    type: SwinGaitSu
+    block_2d: BasicBlock
+    block_3d: BasicBlock
+    conv_3d: Conv3DSimple
+    channels: [64, 128, 256, 512]
+    in_channel: 1
+    layers: [1, 4, 4, 2]
+    strides: [1, 2, 2, 1]
+    maxpool: false
+    use_checkpoint: true # gradient checkpointing in the Swin layers (4 GPUs x 32 seqs; theirs: 8 x 16)
+  SeparateFCs:
+    in_channels: 512
+    out_channels: 512
+    parts_num: 15
+  SeparateBNNecks:
+    class_num: 3000
+    in_channels: 512
+    parts_num: 15
+  bin_num:
+    - 15
+  open_set_loss: true
+
+optimizer_cfg:
+  lr: 3.0e-4
+  solver: AdamW
+  weight_decay: 2.0e-2
+
+scheduler_cfg:
+  t_initial: 60000
+  scheduler: CosineLRScheduler
+
+trainer_cfg:
+  enable_float16: true # half_percesion float for memory reduction and speedup
+  fix_BN: false
+  with_test: false
+  log_iter: 100
+  restore_ckpt_strict: true
+  restore_hint: 0
+  save_iter: 10000
+  save_name: SwinGait3D_Su2024_OpenSetLoss_NoId_w1
+  sync_BN: true
+  total_iter: 60000
+  sampler:
+    batch_shuffle: true
+    batch_size:
+      - 32 # TripletSampler, batch_size[0] indicates Number of Identity
+      - 4 #                 batch_size[1] indicates Samples sequqnce for each Identity
+    frames_num_max: 50 # max frames number for unfixed training
+    frames_num_min: 10 # min frames number for unfixed training
+    frames_num_per_batch: true
+    frames_skip_num: 0 # skip frames number for ordered training
+    sample_type: unfixed_ordered # fixed control input frames number, unordered for controlling order of input tensor; Other options: unfixed_ordered or all_ordered
+    type: TripletNoRepeatSampler
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: RandomPerspective
+          prob: 0.3
+        - type: BaseSilTransform
+        - type: RandomHorizontalFlip
+          prob: 0.3
+        - type: RandomRotate
+          prob: 0.3

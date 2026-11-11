@@ -119,6 +119,56 @@ def test_configs_differ_only_in_loss():
     assert a == b
 
 
+def test_no_identification_configs_differ_only_in_detection():
+    # [EXP] OpenSetLoss sin identificación: E4.1 + identification: false + det_weight
+    for w in (1, 4, 10):
+        a, b = load_cfg(OSL_CFG), load_cfg(os.path.join(CFG_DIR, f'SwinGait3D_Su2024_Gait3D_OpenSetLoss_NoId_w{w}.yaml'))
+        osl = b['loss_cfg'][2]
+        assert osl.pop('identification') is False and osl.pop('det_weight') == w
+        for c in (a, b):
+            c['evaluator_cfg'].pop('save_name')
+            c['trainer_cfg'].pop('save_name')
+        assert a == b
+
+
+def test_calibrated_config_differs_only_in_idl():
+    # [EXP] IDL calibrada: E4.1 + scale-invariant scores, alpha 20, gamma 30, beta 1, no own-template rank term
+    a, b = load_cfg(OSL_CFG), load_cfg(os.path.join(CFG_DIR, 'SwinGait3D_Su2024_Gait3D_OpenSetLoss_Calib.yaml'))
+    calib = dict(score_scale=20.0, rank_scale=1.0, rank_diff_scale=30.0, scale_invariant=True,
+                 rank_self_term=False, rtm_softmax_scale=10.0)
+    assert {k: b['loss_cfg'][2][k] for k in calib} == calib
+    for k in calib:
+        a['loss_cfg'][2].pop(k, None)
+        b['loss_cfg'][2].pop(k)
+    assert b['trainer_cfg'].pop('save_iter') == 5000
+    a['trainer_cfg'].pop('save_iter')
+    for c in (a, b):
+        c['evaluator_cfg'].pop('save_name')
+        c['trainer_cfg'].pop('save_name')
+    assert a == b
+
+
+def test_genuine_norm_picasso_config_differs_only_in_scale_and_gpus():
+    # E4.6 (picasso, 8 GPUs): E4.5 + scale referenced to the genuine mean with gradient; DATASET_ROOT placeholder
+    a = load_cfg(os.path.join(CFG_DIR, 'SwinGait3D_Su2024_Gait3D_OpenSetLoss_Calib.yaml'))
+    b = load_cfg(os.path.join(CFG_DIR, 'SwinGait3D_Su2024_Gait3D_OpenSetLoss_GenNorm_picasso.yaml'))
+    assert b['loss_cfg'][2].pop('scale_reference') == 'genuine'
+    assert b['loss_cfg'][2].pop('scale_detach') is False
+    assert b['data_cfg'].pop('dataset_root') == 'DATASET_ROOT'
+    a['data_cfg'].pop('dataset_root')
+    assert b['evaluator_cfg']['sampler'].pop('batch_size') == 8
+    a['evaluator_cfg']['sampler'].pop('batch_size')
+    assert b['model_cfg']['backbone_cfg'].pop('use_checkpoint') is False
+    a['model_cfg']['backbone_cfg'].pop('use_checkpoint')
+    assert b['trainer_cfg']['save_name'] == b['evaluator_cfg']['save_name'] == 'SwinGait3D_Su2024_OpenSetLoss_GenNorm'
+    for c in (a, b):
+        c['evaluator_cfg'].pop('save_name')
+        c['trainer_cfg'].pop('save_name')
+    assert a == b
+    bs = b['trainer_cfg']['sampler']['batch_size']
+    assert bs[0] * bs[1] % 8 == 0
+
+
 class FakeDataset:
     def __init__(self, n_per_subject):
         self.label_set = [f'{i:04d}' for i in range(len(n_per_subject))]
