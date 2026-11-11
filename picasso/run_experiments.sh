@@ -4,10 +4,12 @@
 #   cd ~/fscratch/OpenSetGait/jobs && sbatch ~/OpenSetGait/picasso/run_experiments.sh             # train
 #   sbatch --export=ALL,PHASE=test ~/OpenSetGait/picasso/run_experiments.sh                       # test
 #   sbatch --export=ALL,CFG_FILE=configs/...yaml ~/OpenSetGait/picasso/run_experiments.sh         # other config
+#   sbatch --export=ALL,DATASET=GREW,CFG_FILE=configs/...GREW...yaml ~/OpenSetGait/picasso/run_experiments.sh
 #
 # - Training resumes from the last checkpoint in output/<dataset>/<model>/<save_name>/checkpoints (if any),
 #   so a job killed by the time limit is continued by submitting the same command again.
-# - The dataset is a .tar in fscratch, extracted once per node into $LOCALSCRATCH (flock + marker file).
+# - The dataset is a .tar.gz in fscratch (one file, to stay within the fscratch file quota), extracted once
+#   per node into $LOCALSCRATCH (flock + marker file).
 # - The config may use the placeholder DATASET_ROOT in data_cfg.dataset_root; it is replaced by the local copy.
 # - Python packages missing from the pytorch module (kornia, timm, opencv, imageio) live in PYTHONUSERBASE
 #   (installed once with: module load pytorch/2.10.0; PYTHONUSERBASE=... python -m pip install --user ...).
@@ -29,8 +31,14 @@ echo "NODELIST=${SLURM_NODELIST}  JOB=${SLURM_JOB_ID}  $(date '+%F %T')"
 CODE_DIR="$HOME/OpenSetGait"
 CFG_FILE="${CFG_FILE:-configs/swingait/SwinGait3D_Su2024_Gait3D_OpenSetLoss_GenNorm_picasso.yaml}"  # relative to CODE_DIR
 PHASE="${PHASE:-train}"
-DATASET_TAR="$HOME/fscratch/dataset/Gait3D/Gait3D-sils-64-44-pkl.tar"
-DATASET_NFILES=25309                 # files in the extracted dataset (extraction check)
+DATASET="${DATASET:-Gait3D}"         # Gait3D | GREW (selects the archive below)
+case "$DATASET" in
+    Gait3D) DATASET_TAR="$HOME/fscratch/dataset/Gait3D/Gait3D-sils-64-44-pkl.tar.gz"
+            DATASET_NFILES=25309 ;;  # files in the extracted dataset (extraction check)
+    GREW)   DATASET_TAR="$HOME/fscratch/dataset/GREW/GREW-pkl.tar.gz"
+            DATASET_NFILES=126887 ;;
+    *)      echo "Unknown DATASET=$DATASET"; exit 1 ;;
+esac
 export PYTHONUSERBASE="$HOME/fscratch/pyenv/pytorch-2.10.0"
 # -----------------------
 
@@ -39,7 +47,7 @@ echo "Detected $N_GPUS GPUs (${CUDA_VISIBLE_DEVICES})"
 nvidia-smi -L
 
 # ---- Dataset in the node's local scratch ----
-DATASET_BASE_DIR=$(basename "$DATASET_TAR" .tar)
+DATASET_BASE_DIR=$(basename "$DATASET_TAR" | sed -E 's/\.tar(\.gz)?$//')   # top folder inside the archive
 MYLOCALSCRATCH="$LOCALSCRATCH/$USER"
 JOBLOCALSCRATCH="$MYLOCALSCRATCH/$SLURM_JOB_ID"
 mkdir -p "$JOBLOCALSCRATCH"
@@ -53,7 +61,10 @@ DATASET_ROOT="$MYLOCALSCRATCH/$DATASET_BASE_DIR"
     if [ ! -f "$MARKER_FILE" ] || [ "$(find "$DATASET_ROOT" -type f 2>/dev/null | wc -l)" -ne "$DATASET_NFILES" ]; then
         echo "Extracting $DATASET_TAR into $MYLOCALSCRATCH ..."
         rm -rf "$DATASET_ROOT" "$MYLOCALSCRATCH"/.extraction_done_"${DATASET_BASE_DIR}"_*
-        tar -xf "$DATASET_TAR" -C "$MYLOCALSCRATCH/"
+        case "$DATASET_TAR" in
+            *.gz) tar -I pigz -xf "$DATASET_TAR" -C "$MYLOCALSCRATCH/" ;;   # gzip archive (pigz: faster gunzip)
+            *)    tar -xf "$DATASET_TAR" -C "$MYLOCALSCRATCH/" ;;
+        esac
         [ "$(find "$DATASET_ROOT" -type f | wc -l)" -eq "$DATASET_NFILES" ] || { echo "Extraction incomplete"; exit 1; }
         touch "$MARKER_FILE"
         echo "Extraction complete."

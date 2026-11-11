@@ -81,6 +81,13 @@ flowchart TD
 - 13.1 M parámetros en el backbone.
 - `use_checkpoint: true`: *gradient checkpointing* en las capas Swin (mismos gradientes). Su et al. usan 8 GPUs con 16 secuencias cada una; aquí son 4 con 32, y sin checkpointing hay OOM en 24 GB (pico con checkpointing ≈ 24 GB por GPU, ~1.9 s/iteración).
 
+**GREW** (`configs/swingait/SwinGait3D_Su2024_GREW*.yaml`: E4.7 sin OSL, E4.8 OSL calibrada, E4.9 OSL con escala genuina en picasso). Mismo modelo y entrenamiento que en Gait3D, con estos cambios (tabla 1 del suplemento de Su para SwinGait en GREW):
+- Siluetas GREW-pkl de 64×64, recortadas a 64×44 con `BaseSilCuttingTransform` (entrada `[n, 1, s, 64, 44]`, mismas shapes que arriba).
+- Clips de 20–40 frames y coseno de 150k iteraciones (`t_initial` = `total_iter` = 150k); checkpoint cada 10k.
+- `SeparateBNNecks` con 20000 clases: `logits` `[n, 20000, 15]` (170.7 M parámetros en total, casi todos en el BNNeck).
+- Test con la partición local `datasets/GREW/GREW_local_test.json` (`evaluate_GREW`, sección 4).
+- picasso: `picasso/run_experiments.sh` con `DATASET=GREW` extrae `~/fscratch/dataset/GREW/GREW-pkl.tar.gz` en el scratch local del nodo (los datasets se guardan como un único `.tar.gz` por la cuota de ficheros de fscratch).
+
 `embed = embed_2 if use_emb2 else embed_1` se usa tanto en la pérdida métrica como en la inferencia. Upstream entrenaba la triplet siempre con `embed_1`; en este fork solo cambia con `use_emb2: true` (hoy únicamente `DeepGaitV2_Gait3D_SupCons_Euc.yaml`). Con `model_cfg.open_set_loss: true`, el mismo `embed` se entrega además a la pérdida con `log_prefix: open_set`.
 
 ## 3. Funciones de pérdida

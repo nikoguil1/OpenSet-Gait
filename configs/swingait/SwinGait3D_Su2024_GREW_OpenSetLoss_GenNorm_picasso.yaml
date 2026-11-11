@@ -1,0 +1,125 @@
+# E4.6 on GREW (E4.9), for picasso (SCBI, Slurm, 8 GPUs; launch with picasso/run_experiments.sh and DATASET=GREW).
+# SwinGait3D_Su2024_GREW_OpenSetLoss_Calib.yaml (E4.8, E4.5 on GREW) with the changes of E4.6
+# (SwinGait3D_Su2024_Gait3D_OpenSetLoss_GenNorm_picasso.yaml):
+#   - OpenSetLoss: d' = d / mean genuine (mated) distance, with gradient (scale_reference: genuine,
+#     scale_detach: false): exactly scale invariant, no radial gradient.
+#   - 8 GPUs x 16 sequences (Su's setting): use_checkpoint false, evaluator batch_size 8.
+#   - dataset_root: DATASET_ROOT is replaced by the launch script with the copy in the node's local scratch.
+# GREW settings as E4.7/E4.8: 20-40 frames, half-cosine schedule of 150k iterations, 20000 classes, local test split.
+data_cfg:
+  dataset_name: GREW
+  dataset_root: DATASET_ROOT # set by picasso/run_experiments.sh
+  dataset_partition: ./datasets/GREW/GREW_local_test.json
+  num_workers: 4
+  remove_no_gallery: false # Remove probe if no gallery for it
+  test_dataset_name: GREW
+
+evaluator_cfg:
+  enable_float16: true
+  restore_ckpt_strict: true
+  restore_hint: 150000
+  save_name: SwinGait3D_Su2024_GREW_OpenSetLoss_GenNorm
+  eval_func: evaluate_GREW
+  sampler:
+    batch_shuffle: false
+    batch_size: 8 # number of GPUs
+    sample_type: all_ordered # all indicates whole sequence used to test, while ordered means input sequence by its natural order; Other options:   fixed_unordered
+    frames_all_limit: 720 # limit the number of sampled frames to prevent out of memory
+  metric: euc # cos
+  transform:
+    - type: BaseSilCuttingTransform # GREW pkls are 64x64; cut to 64x44 as the Gait3D input
+
+loss_cfg:
+  - loss_term_weight: 1.0
+    margin: 0.2
+    type: TripletLossSu # their triplet: anchor by anchor, for unbalanced batches
+    log_prefix: triplet
+  - loss_term_weight: 1.0
+    scale: 16
+    type: CrossEntropyLoss
+    log_prefix: softmax
+    log_accuracy: true
+
+  # recalibrated IDL as E4.5, genuine-referenced scale as E4.6 (Su's published config: alpha = gamma = 9, beta = 0.2, raw distances)
+  - loss_term_weight: 1.0
+    type: OpenSetLoss
+    num_folds: 4
+    rank: 1
+    score_scale: 20.0 # alpha
+    rank_scale: 1.0 # beta
+    rank_diff_scale: 30.0 # gamma
+    scale_invariant: true
+    rank_self_term: false
+    rtm_softmax_scale: 10.0
+    scale_reference: genuine # d / mean mated distance (E4.5/E4.8: all pairs)
+    scale_detach: false # gradient through the mean: exactly scale invariant
+    rtm_weight: 4.0
+    num_parts: 15
+    log_prefix: open_set
+
+model_cfg:
+  model: Baseline3D
+  backbone_cfg:
+    type: SwinGaitSu
+    block_2d: BasicBlock
+    block_3d: BasicBlock
+    conv_3d: Conv3DSimple
+    channels: [64, 128, 256, 512]
+    in_channel: 1
+    layers: [1, 4, 4, 2]
+    strides: [1, 2, 2, 1]
+    maxpool: false
+    use_checkpoint: false # 8 GPUs x 16 seqs, as Su et al.
+  SeparateFCs:
+    in_channels: 512
+    out_channels: 512
+    parts_num: 15
+  SeparateBNNecks:
+    class_num: 20000
+    in_channels: 512
+    parts_num: 15
+  bin_num:
+    - 15
+  open_set_loss: true
+
+optimizer_cfg:
+  lr: 3.0e-4
+  solver: AdamW
+  weight_decay: 2.0e-2
+
+scheduler_cfg:
+  t_initial: 150000
+  scheduler: CosineLRScheduler
+
+trainer_cfg:
+  enable_float16: true # half_percesion float for memory reduction and speedup
+  fix_BN: false
+  with_test: false
+  log_iter: 100
+  restore_ckpt_strict: true
+  restore_hint: 0
+  save_iter: 10000
+  save_name: SwinGait3D_Su2024_GREW_OpenSetLoss_GenNorm
+  sync_BN: true
+  total_iter: 150000
+  sampler:
+    batch_shuffle: true
+    batch_size:
+      - 32 # TripletSampler, batch_size[0] indicates Number of Identity
+      - 4 #                 batch_size[1] indicates Samples sequqnce for each Identity
+    frames_num_max: 40 # Su, suppl. Tab. 1 (GREW): 20-40 frames
+    frames_num_min: 20
+    frames_num_per_batch: true
+    frames_skip_num: 0 # skip frames number for ordered training
+    sample_type: unfixed_ordered # fixed control input frames number, unordered for controlling order of input tensor; Other options: unfixed_ordered or all_ordered
+    type: TripletNoRepeatSampler
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: RandomPerspective
+          prob: 0.3
+        - type: BaseSilCuttingTransform
+        - type: RandomHorizontalFlip
+          prob: 0.3
+        - type: RandomRotate
+          prob: 0.3
