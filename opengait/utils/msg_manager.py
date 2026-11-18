@@ -17,9 +17,12 @@ class MessageManager:
         self.writer_hparams = ['image', 'scalar']
         self.time = time.time()
 
-    def init_manager(self, save_path, log_to_file, log_iter, iteration=0):
+    def init_manager(self, save_path, log_to_file, log_iter, iteration=0, tb_scalar_iter=None):
         self.iteration = iteration
         self.log_iter = log_iter
+        # TensorBoard scalars every tb_scalar_iter iterations (None: every log_iter, as OpenGait);
+        # images, console log and info averaging stay on log_iter
+        self.tb_scalar_iter = tb_scalar_iter
         mkdir(osp.join(save_path, "summary/"))
         self.writer = SummaryWriter(
             osp.join(save_path, "summary/"), purge_step=self.iteration)
@@ -56,10 +59,12 @@ class MessageManager:
         self.info_dict.clear()
         self.writer.flush()
 
-    def write_to_tensorboard(self, summary):
+    def write_to_tensorboard(self, summary, modules=None):
 
         for k, v in summary.items():
             module_name = k.split('/')[0]
+            if modules is not None and module_name not in modules:
+                continue
             if module_name not in self.writer_hparams:
                 self.log_warning(
                     'Not Expected --Summary-- type [{}] appear!!!{}'.format(k, self.writer_hparams))
@@ -95,10 +100,12 @@ class MessageManager:
     def train_step(self, info, summary):
         self.iteration += 1
         self.append(info)
+        if self.tb_scalar_iter and self.iteration % self.tb_scalar_iter == 0:
+            self.write_to_tensorboard(summary, modules=['scalar'])
         if self.iteration % self.log_iter == 0:
             self.log_training_info()
             self.flush()
-            self.write_to_tensorboard(summary)
+            self.write_to_tensorboard(summary, modules=['image'] if self.tb_scalar_iter else None)
 
     def log_debug(self, *args, **kwargs):
         self.logger.debug(*args, **kwargs)

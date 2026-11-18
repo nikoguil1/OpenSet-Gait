@@ -28,7 +28,8 @@ def initialization(cfgs, training):
                                cfgs['model_cfg']['model'], engine_cfg['save_name'])
     if training:
         msg_mgr.init_manager(output_path, opt.log_to_file, engine_cfg['log_iter'],
-                             engine_cfg['restore_hint'] if isinstance(engine_cfg['restore_hint'], (int)) else 0)
+                             engine_cfg['restore_hint'] if isinstance(engine_cfg['restore_hint'], (int)) else 0,
+                             tb_scalar_iter=engine_cfg.get('tb_scalar_iter'))
     else:
         msg_mgr.init_logger(output_path, opt.log_to_file)
 

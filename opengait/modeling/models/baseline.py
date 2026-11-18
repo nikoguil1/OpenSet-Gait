@@ -14,6 +14,8 @@ class Baseline(BaseModel):
         self.BNNecks = SeparateBNNecks(**model_cfg['SeparateBNNecks'])
         self.TP = PackSequenceWrapper(torch.max)
         self.HPP = HorizontalPoolingPyramid(bin_num=model_cfg['bin_num'])
+        # feed embed_1 to an open-set loss with log_prefix 'open_set' (Su et al., ECCV 2024, Baseline_OpenSet)
+        self.open_set_loss = model_cfg.get('open_set_loss', False)
 
     def forward(self, inputs):
         ipts, labs, _, _, seqL = inputs
@@ -48,4 +50,6 @@ class Baseline(BaseModel):
                 'embeddings': embed
             }
         }
+        if self.open_set_loss:
+            retval['training_feat']['open_set'] = {'embeddings': embed_1, 'labels': labs}
         return retval
