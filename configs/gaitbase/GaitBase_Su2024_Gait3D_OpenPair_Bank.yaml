@@ -1,0 +1,120 @@
+# GaitBase + Triplet + CE + open-pair loss (lambda = 0.5) with memory bank on Gait3D.
+# Identical to GaitBase_Su2024_Gait3D_OpenPair.yaml except OpenPairLoss.memory_bank: true (and save_name).
+# Why: the in-batch gallery has ~24 templates and the test gallery ~800, so the in-batch nearest-intruder distance is
+# too optimistic (OpenPair at 60k: mean gap d_nm - d_gen 0.197 on training batches vs 0.025 on Gait3D test; nearest
+# intruder 1.37 among 24 templates vs 1.09 among all 2999 training identities vs 1.10 on test). With the bank, the
+# nearest intruder is searched among the in-batch templates and an EMA template of every training identity
+# (same kind of template and same raw Euclidean distance as the genuine term), so the margin m = 0.2 now refers
+# to test-like conditions. CE proxies were discarded: their distances are offset from template distances
+# (own -0.08, nearest other +0.06 in the classifier space).
+# New TensorBoard scalars: open_set/d_nm_min_batch (in-batch templates only), open_set/nm_from_bank,
+# open_set/bank_filled; open_set/d_nm_min is the distance used in the hinge.
+data_cfg:
+  dataset_name: Gait3D
+  dataset_root: /home/nico/gait/datasets/Gait3D/Gait3D-pkls/Gait3D-sils-64-44-pkl
+  dataset_partition: ./datasets/Gait3D/Gait3D.json
+  num_workers: 4
+  remove_no_gallery: false # Remove probe if no gallery for it
+  test_dataset_name: Gait3D
+
+evaluator_cfg:
+  enable_float16: true
+  restore_ckpt_strict: true
+  restore_hint: 60000
+  save_name: GaitBase_Su2024_OpenPair_Bank
+  eval_func: evaluate_Gait3D
+  sampler:
+    batch_shuffle: false
+    batch_size: 4
+    sample_type: all_ordered
+    frames_all_limit: 720 # limit the number of sampled frames to prevent out of memory
+  metric: euc
+  transform:
+    - type: BaseSilTransform
+
+loss_cfg:
+  - loss_term_weight: 1.0
+    margin: 0.2
+    type: TripletLossSu # their triplet: anchor by anchor, for unbalanced batches
+    log_prefix: triplet
+  - loss_term_weight: 1.0
+    scale: 16
+    type: CrossEntropyLoss
+    log_prefix: softmax
+    log_accuracy: true
+  # open-pair loss (lambda = 0.5) in place of Su's OpenSetLoss; same folds / gallery-probe split
+  - loss_term_weight: 0.5
+    type: OpenPairLoss
+    num_folds: 4
+    margin: 0.2 # same Euclidean space and margin as the triplet
+    reduction: nonzero
+    memory_bank: true # nearest intruder searched also among the templates of all training identities
+    num_classes: 3000 # = SeparateBNNecks.class_num (Gait3D training identities)
+    bank_momentum: 0.5 # template = EMA over the visits of an identity (~every 80-95 iterations)
+    log_prefix: open_set
+
+model_cfg:
+  model: Baseline
+  backbone_cfg:
+    type: ResNet9
+    block: BasicBlock
+    channels: [64, 128, 256, 512]
+    layers: [1, 1, 1, 1]
+    strides: [1, 2, 2, 1]
+    maxpool: false
+  SeparateFCs:
+    in_channels: 512
+    out_channels: 256
+    parts_num: 16
+  SeparateBNNecks:
+    class_num: 3000
+    in_channels: 256
+    parts_num: 16
+  bin_num:
+    - 16
+  open_set_loss: true
+
+optimizer_cfg:
+  lr: 0.1
+  momentum: 0.9
+  solver: SGD
+  weight_decay: 0.0005
+
+scheduler_cfg:
+  gamma: 0.1
+  milestones: [20000, 40000, 50000]
+  scheduler: MultiStepLR
+
+trainer_cfg:
+  enable_float16: true
+  fix_BN: false
+  with_test: false
+  log_iter: 100
+  tb_scalar_iter: 1
+  restore_ckpt_strict: true
+  restore_hint: 0
+  save_iter: 20000
+  save_name: GaitBase_Su2024_OpenPair_Bank
+  sync_BN: true
+  total_iter: 60000
+  sampler:
+    batch_shuffle: true
+    batch_size:
+      - 32 # TripletSampler, batch_size[0] indicates Number of Identity
+      - 4 #                 batch_size[1] indicates Samples sequqnce for each Identity
+    frames_num_fixed: 30
+    frames_num_max: 50
+    frames_num_min: 10
+    frames_num_per_batch: true
+    sample_type: unfixed_unordered
+    type: TripletNoRepeatSampler
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: RandomPerspective
+          prob: 0.35
+        - type: BaseSilTransform
+        - type: RandomHorizontalFlip
+          prob: 0.35
+        - type: RandomRotate
+          prob: 0.35
