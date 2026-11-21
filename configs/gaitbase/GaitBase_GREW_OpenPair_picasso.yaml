@@ -9,8 +9,8 @@
 # Other changes (no effect on training): dataset_root placeholder, local test split + evaluate_GREW, evaluator
 # batch_size = number of GPUs, num_workers 4 (OpenGait: 1), save_iter 10000 (OpenGait: 60000), tb_scalar_iter 1.
 # 4 GPUs x 32 sequences = same global batch as 8 x 16 (losses gather the whole batch, DDP averages, sync_BN).
-# Launch: sbatch -J GaitBase_GREW_OpenPair --gres=gpu:4 --cpus-per-task=32 --mem=200G \
-#   --export=ALL,DATASET=GREW,CFG_FILE=configs/gaitbase/GaitBase_GREW_OpenPair_picasso.yaml ~/OpenSetGait/picasso/run_experiments.sh
+# Launch (never --export on picasso: those jobs are cancelled at start): from ~/fscratch/OpenSetGait/jobs,
+#   sbatch job_GaitBase_GREW_OpenPair.sh   (4 GPUs, 32 CPUs, 200G, 3 days; exports DATASET=GREW and this CFG_FILE)
 data_cfg:
   dataset_name: GREW
   dataset_root: DATASET_ROOT # set by picasso/run_experiments.sh

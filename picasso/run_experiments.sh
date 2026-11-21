@@ -1,10 +1,16 @@
 #!/bin/bash -l
 # Slurm launcher for OpenSet-Gait on picasso (SCBI, UMA), adapted from the run_experiments.sh template.
 #
-#   cd ~/fscratch/OpenSetGait/jobs && sbatch ~/OpenSetGait/picasso/run_experiments.sh             # train
-#   sbatch --export=ALL,PHASE=test ~/OpenSetGait/picasso/run_experiments.sh                       # test
-#   sbatch --export=ALL,CFG_FILE=configs/...yaml ~/OpenSetGait/picasso/run_experiments.sh         # other config
-#   sbatch --export=ALL,DATASET=GREW,CFG_FILE=configs/...GREW...yaml ~/OpenSetGait/picasso/run_experiments.sh
+#   cd ~/fscratch/OpenSetGait/jobs && sbatch ~/OpenSetGait/picasso/run_experiments.sh             # train (defaults)
+#
+# NEVER use sbatch --export on picasso: jobs submitted with it are cancelled by the system 1-2 s after starting
+# (no log), and since 2026-11-20 the sbatch wrapper rejects it. For another config / dataset / phase, write a
+# small job script in ~/fscratch/OpenSetGait/jobs with its own #SBATCH lines (they override the ones below) and
+#   export DATASET=GREW                                    # Gait3D | GREW
+#   export CFG_FILE=configs/...yaml                        # relative to the repository root
+#   export PHASE=test                                      # optional (default train)
+#   bash $HOME/OpenSetGait/picasso/run_experiments.sh
+# then `sbatch job_X.sh` (examples: job_GaitBase_GREW_OpenPair.sh, job_Scaling_SwinGait3D_*xB200.sh).
 #
 # - Training resumes from the last checkpoint in output/<dataset>/<model>/<save_name>/checkpoints (if any),
 #   so a job killed by the time limit is continued by submitting the same command again.
