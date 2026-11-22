@@ -23,11 +23,39 @@ genuine term. The bank is a constant (no gradient), it is updated after the loss
 it is not saved in the checkpoint (rebuilt in ~K / subjects-per-batch iterations after a restart). The genuine
 term d(x_m, g_y(x_m)) still uses the in-batch template. Labels must be class indices in [0, num_classes).
 
+scale_reference (optional, idea 1 of the post-bank analysis): with raw distances and an absolute margin the model
+can satisfy the margin by stretching / shrinking the embedding space instead of separating the classes. With
+scale_reference='genuine', every distance of a fold is divided, per part, by s = mean_{x_m} d(x_m, g_y(x_m)) (the
+mean genuine distance of that fold), as OpenSetLoss with scale_invariant + scale_reference='genuine' (E4.6):
+    max(0, d_gen / s - d_nm / s + m_open)
+so m_open is a relative margin. scale_detach=False (default) lets the gradient flow through s: the loss is then
+exactly invariant to the embedding scale and has no radial gradient. scale_reference='none' (default) keeps the raw
+distances. The logged d_gen / d_nm_min stay raw; 'scale' logs s.
+
+tail_frac (optional, idea 2): FNIR@1%FPIR is set by the few intruders closest to the gallery, while the mean over all
+(x_m, x_u) pairs is a surrogate of the full AUC (in our runs AUC / OSCR / FNIR@5% kept improving after 40k while
+FNIR@1% got worse). With tail_frac = beta in (0, 1), each fold keeps, per part, only the ceil(beta * |P_NM|)
+non-mated probes with the smallest d_nm (the hardest intruders) and the hinge runs over P_M x (that tail): the
+standard surrogate of the one-way partial AUC over FPR in [0, beta] (Narasimhan & Agarwal, ICML 2013).
+tail_frac=None (default) uses every non-mated probe.
+
+nm_sequences (optional, idea 3a): the in-batch min over ~24 templates overestimates the test min over ~785
+(extreme-value bias, see memory_bank above). With nm_sequences=True the candidates for the nearest gallery item of a
+non-mated probe are the templates of the fold AND every individual sequence of the known (non-fold) subjects of the
+batch (template and mated-probe sequences alike, ~4x more candidates), all computed with the current model and with
+gradient, so nothing is stale (unlike the bank):
+    d_nm(x_u) = min( min_{g in G} d(x_u, g), min_{x in S_K} d(x_u, x) )
+S_K holds only subjects outside the fold, so the probe's own identity is never a candidate. The genuine term keeps
+the in-batch template. Logs 'd_nm_min_tmpl' (templates only) and 'nm_from_seq' (fraction of non-mated probes whose
+min is a sequence). Applied before the scale normalisation and the tail selection.
+
 reduction:
   - 'nonzero' (default): mean over the active pairs (hinge > 0), as OpenGait's TripletLoss (AvgNonZeroReducer),
     so the loss does not fade out as most pairs satisfy the margin and its scale is comparable to the triplet.
   - 'mean': mean over all |P_M| |P_NM| pairs of the fold (the formula as written).
 """
+import math
+
 import torch
 from torch.nn import functional as F
 
@@ -37,7 +65,8 @@ from .open_set import compute_distance
 
 class OpenPairLoss(BaseLoss):
     def __init__(self, num_folds=4, margin=0.2, reduction='nonzero', memory_bank=False, num_classes=None,
-                 bank_momentum=0.5, loss_term_weight=1.0):
+                 bank_momentum=0.5, scale_reference='none', scale_detach=False, tail_frac=None,
+                 nm_sequences=False, loss_term_weight=1.0):
         super(OpenPairLoss, self).__init__(loss_term_weight)
         if reduction not in ('nonzero', 'mean'):
             raise ValueError(f"reduction must be 'nonzero' or 'mean', got {reduction!r}")
@@ -45,6 +74,14 @@ class OpenPairLoss(BaseLoss):
             raise ValueError('memory_bank needs num_classes (number of training identities)')
         if not 0 <= bank_momentum < 1:
             raise ValueError(f'bank_momentum must be in [0, 1), got {bank_momentum}')
+        if scale_reference not in ('none', 'genuine'):
+            raise ValueError(f"scale_reference must be 'none' or 'genuine', got {scale_reference!r}")
+        if tail_frac is not None and not 0 < tail_frac <= 1:
+            raise ValueError(f'tail_frac must be in (0, 1], got {tail_frac}')
+        self.scale_reference = scale_reference
+        self.scale_detach = scale_detach
+        self.tail_frac = tail_frac
+        self.nm_sequences = nm_sequences
         self.num_folds = num_folds
         self.margin = margin
         self.reduction = reduction
@@ -109,7 +146,7 @@ class OpenPairLoss(BaseLoss):
             # every sample is non-mated in exactly one fold, so compute its bank distance once
             d_bank_all = self.bank_min_distance(embeddings.permute(2, 0, 1).contiguous().float(), labels)  # [p, n]
 
-        hinges, d_gen_all, d_nm_all, d_nm_batch_all, from_bank = [], [], [], [], []
+        hinges, d_gen_all, d_nm_all, d_nm_batch_all, from_bank, scales, from_seq = [], [], [], [], [], [], []
         for fold in folds:
             gallery_idx, labels_gallery, probe_match, probe_nonmatch = self.split_fold(labels, unique_labels, fold)
             if len(probe_match) == 0 or len(probe_nonmatch) == 0:
@@ -127,14 +164,30 @@ class OpenPairLoss(BaseLoss):
             d_gen = (dist_m * match_mask.unsqueeze(0)).sum(1)  # [p, n_m]: d(x_m, g_y(x_m))
             d_nm = compute_distance(gallery, emb_u).min(1)[0]  # [p, n_u]: min over the in-batch templates
             d_nm_batch_all.append(d_nm.detach())
+            if self.nm_sequences:
+                known_idx = torch.cat(gallery_idx).tolist() + probe_match  # every sequence of the non-fold subjects
+                emb_k = embeddings[known_idx].permute(2, 0, 1).contiguous().float()  # [p, n_k, c]
+                d_nm_seq = compute_distance(emb_k, emb_u).min(1)[0]  # [p, n_u]
+                from_seq.append((d_nm_seq < d_nm).float().detach())
+                d_nm = torch.minimum(d_nm, d_nm_seq)  # min over templates U individual sequences
             if use_bank:
                 d_nm_bank = d_bank_all[:, probe_nonmatch]  # [p, n_u]
                 from_bank.append((d_nm_bank < d_nm).float().detach())
                 d_nm = torch.minimum(d_nm, d_nm_bank)  # min over in-batch templates U bank
 
-            hinges.append(F.relu(d_gen.unsqueeze(2) - d_nm.unsqueeze(1) + self.margin).flatten(1))  # [p, n_m * n_u]
             d_gen_all.append(d_gen.detach())
             d_nm_all.append(d_nm.detach())
+            if self.scale_reference == 'genuine':
+                scale = d_gen.mean(1, keepdim=True)  # [p, 1]: mean genuine distance of the fold
+                if self.scale_detach:
+                    scale = scale.detach()
+                scales.append(scale.detach().squeeze(1))
+                d_gen, d_nm = d_gen / scale, d_nm / scale
+            if self.tail_frac is not None:
+                k = max(1, math.ceil(self.tail_frac * d_nm.shape[1]))
+                d_nm = d_nm.topk(k, dim=1, largest=False)[0]  # [p, k]: hardest intruders, per part
+
+            hinges.append(F.relu(d_gen.unsqueeze(2) - d_nm.unsqueeze(1) + self.margin).flatten(1))  # [p, n_m * k]
 
         hinge = torch.cat(hinges, 1)  # [p, num_pairs over all folds]
         active = (hinge > 0).sum(1).float()  # [p]
@@ -150,6 +203,11 @@ class OpenPairLoss(BaseLoss):
             'd_gen': torch.cat(d_gen_all, 1).mean(1),
             'd_nm_min': torch.cat(d_nm_all, 1).mean(1),  # distance used in the hinge
         })
+        if self.nm_sequences:
+            self.info['d_nm_min_tmpl'] = torch.cat(d_nm_batch_all, 1).mean(1)  # templates only
+            self.info['nm_from_seq'] = torch.cat(from_seq, 1).mean(1)
+        if scales:
+            self.info['scale'] = torch.stack(scales, 1).mean(1)
         if self.memory_bank:
             self.info['d_nm_min_batch'] = torch.cat(d_nm_batch_all, 1).mean(1)  # in-batch templates only
             self.info['nm_from_bank'] = (torch.cat(from_bank, 1).mean(1) if from_bank

@@ -219,6 +219,47 @@ Config `GaitBase_Su2024_Gait3D_OpenPair_Bank.yaml`.
 - Hasta unas 40k iteraciones el banco apenas interviene: con learning rate alto, las plantillas quedan obsoletas respecto al modelo actual.
 - Cuando se activa, el espacio se comprime.
 
+### 6.2 Escala genuina y cola de intrusos (OpenPair v2)
+
+Dos opciones independientes, desactivadas por defecto.
+
+**Escala genuina** (`scale_reference: genuine`, `scale_detach: false`). Con distancias en bruto y margen absoluto, la red puede cumplir el margen estirando o encogiendo el espacio sin separar mejor las clases. En cada fold y parte, todas las distancias se dividen por la media de las genuinas:
+
+$$
+s = \frac{1}{|\mathcal{P}_M|}\sum_{x_m} d(x_m, g_{y(x_m)}), \qquad
+\max\big(0,\; d_{gen}/s - d_{nm}/s + m_{open}\big)
+$$
+
+$m_{open}$ pasa a ser un margen relativo. Con gradiente a través de $s$, la pérdida es exactamente invariante a la escala del embedding y no tiene componente radial, como la OSL de E4.6. Registra `scale` ($s$); `d_gen` y `d_nm_min` siguen en unidades brutas.
+
+**Cola de intrusos** (`tail_frac: β`). El FNIR@1%FPIR lo fija el ~1 % de intrusos más cercanos, mientras que la media sobre todos los pares es un sustituto del AUC completo. Con GaitBase, de 40k a 60k mejoran el AUC, el OSCR y el FNIR@5 %, pero empeora el FNIR@1 %. En cada fold y parte solo entran en la hinge los $\lceil \beta\,|\mathcal{P}_{NM}| \rceil$ intrusos con menor $d_{nm}$:
+
+$$
+\frac{1}{|\mathcal{A}|}\sum_{x_m \in \mathcal{P}_M}\ \sum_{x_u \in \mathcal{T}_\beta}
+\max\big(0,\; d_{gen}(x_m) - d_{nm}(x_u) + m_{open}\big)
+$$
+
+donde $\mathcal{T}_\beta$ son esos intrusos más cercanos. Es el sustituto estándar del AUC parcial con FPR ∈ [0, β] (Narasimhan & Agarwal, ICML 2013). Con β = 0.25 y 8 sujetos por fold quedan 8 de 32 intrusos.
+
+Config `GaitBase_Su2024_Gait3D_OpenPair_v2.yaml`: las dos opciones, m = 0.2 y β = 0.25. **Estado:** en curso.
+
+### 6.3 Intruso más cercano entre secuencias (`nm_sequences: true`, v2.a)
+
+Corrige el sesgo de valor extremo de la sección 6.1 sin banco. El intruso busca su elemento de galería más cercano entre las plantillas del fold **y** todas las secuencias individuales de los sujetos conocidos del batch $S_K$ (las de plantilla y las de probe registrado):
+
+$$
+d_{nm}(x_u) = \min\Big(\min_{g\in G} d(x_u, g),\; \min_{x\in S_K} d(x_u, x)\Big)
+$$
+
+- Hay unas 4 veces más candidatos. Todos se calculan con el modelo actual y con gradiente, así que nada queda obsoleto (al contrario que con el banco).
+- $S_K$ excluye a los sujetos del fold, así que la propia identidad del intruso nunca es candidata.
+- El término genuino sigue usando la plantilla del batch.
+- Se aplica antes de normalizar por la escala genuina y de seleccionar la cola.
+- Registra `d_nm_min_tmpl` (solo plantillas) y `nm_from_seq` (fracción de intrusos cuyo mínimo es una secuencia).
+- Limitación: en test la galería son plantillas medias. Una secuencia suelta es más ruidosa que una media, así que su mínimo no es del todo comparable.
+
+Config `GaitBase_Su2024_Gait3D_OpenPair_v2a.yaml` (v2 + `nm_sequences: true`). **Estado:** en curso.
+
 ## 7. Resumen
 
 | Pérdida | Fichero | Opera sobre | Objetivo |
@@ -230,3 +271,5 @@ Config `GaitBase_Su2024_Gait3D_OpenPair_Bank.yaml`.
 | — calibrada / escala genuina | `open_set.py` | $d' = d/\bar d$ o $d/\bar d_{gen}$ | lo mismo, invariante a la escala del embedding |
 | OpenPair | `open_pair.py` | distancias, simulación open-set | genuino $+\, m$ < intruso más cercano (umbral global) |
 | — banco de memoria | `open_pair.py` | ídem + plantillas EMA de todas las identidades | intruso más cercano realista (galería grande) |
+| — v2: escala genuina + cola | `open_pair.py` | $d/\bar d_{gen}$, intruso entre el β más cercano | margen relativo; AUC parcial en FPIR baja |
+| — v2.a: + secuencias como candidatos | `open_pair.py` | ídem, $d_{nm}$ sobre plantillas ∪ secuencias conocidas | intruso más cercano más realista sin banco |

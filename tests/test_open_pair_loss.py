@@ -2,6 +2,7 @@
 
 Run: python tests/test_open_pair_loss.py   (or pytest tests/)
 """
+import math
 import os
 import sys
 
@@ -160,6 +161,130 @@ def test_bank_rejects_labels_out_of_range():
     except ValueError:
         return
     raise AssertionError('labels >= num_classes must raise')
+
+
+# --- scale_reference='genuine' (idea 1) and tail_frac (idea 2) ---
+
+def reference_v2(emb, labels, num_folds=4, margin=0.2, scale=False, tail_frac=None):
+    """Literal loops: per fold and part, divide by the mean genuine distance and keep the ceil(beta |P_NM|) closest
+    intruders; 'mean' reduction pooled over folds."""
+    uniq = torch.unique(labels)
+    terms = []
+    for fold in torch.chunk(uniq, num_folds):
+        G, gl, pm, pu = OpenPairLoss.split_fold(labels, uniq, fold)
+        gal = torch.stack([emb[i].mean(0) for i in G]).permute(2, 0, 1)
+        gl = torch.stack(gl)
+        dm = compute_distance(gal, emb[pm].permute(2, 0, 1))
+        du = compute_distance(gal, emb[pu].permute(2, 0, 1)).min(1)[0]  # [p, n_u]
+        dg = torch.stack([dm[:, (gl == labels[xm]).nonzero().item(), a] for a, xm in enumerate(pm)], 1)  # [p, n_m]
+        for part in range(dg.shape[0]):
+            g, u = dg[part], du[part]
+            if scale:
+                g, u = g / g.mean(), u / g.mean()
+            if tail_frac is not None:
+                k = max(1, math.ceil(tail_frac * len(u)))
+                u = torch.sort(u)[0][:k]
+            for a in range(len(g)):
+                for b in range(len(u)):
+                    terms.append((part, torch.relu(g[a] - u[b] + margin)))
+    p = emb.shape[2]
+    return torch.stack([torch.stack([t for q, t in terms if q == part]).mean() for part in range(p)])
+
+
+def test_scale_and_tail_match_formula():
+    emb, labels = batch(noise=1.0, perm=True, seed=3)
+    emb, labels = emb[:64], labels[:64]
+    for cfg in [dict(scale=True), dict(tail_frac=0.25), dict(scale=True, tail_frac=0.25)]:
+        loss, _ = loss_of(emb, labels, reduction='mean', scale_reference='genuine' if cfg.get('scale') else 'none',
+                          tail_frac=cfg.get('tail_frac'))
+        assert torch.allclose(loss, reference_v2(emb, labels, **cfg), atol=1e-5), cfg
+
+
+def test_tail_frac_one_equals_plain():
+    emb, labels = batch(noise=1.0, perm=True)
+    plain, _ = loss_of(emb, labels)
+    full, _ = loss_of(emb, labels, tail_frac=1.0)
+    assert torch.allclose(plain, full)
+
+
+def test_tail_is_harder():
+    emb, labels = batch(noise=1.0)
+    l_all, i_all = loss_of(emb, labels, reduction='mean')
+    l_tail, i_tail = loss_of(emb, labels, reduction='mean', tail_frac=0.25)
+    assert (l_tail > l_all).all() and (i_tail['active_frac'] > i_all['active_frac']).all()
+
+
+def test_genuine_scale_invariance_and_no_radial_gradient():
+    emb, labels = batch(noise=1.0, seed=5)
+    cfg = dict(scale_reference='genuine', tail_frac=0.25)
+    l1, info = loss_of(emb, labels, **cfg)
+    l3, _ = loss_of(3.0 * emb, labels, **cfg)
+    assert torch.allclose(l1, l3, atol=1e-5)
+    assert torch.allclose(info['scale'], info['d_gen'], rtol=1e-4)  # same folds, mean of means
+    x = emb.clone().requires_grad_(True)
+    loss, _ = loss_of(x, labels, **cfg)
+    loss.sum().backward()
+    radial = (x.grad * x).sum() / (x.grad.norm() * x.norm())
+    assert radial.abs() < 1e-4 and x.grad.abs().sum() > 0
+    # with the detached scale the loss is no longer scale invariant
+    ld, _ = loss_of(emb, labels, scale_detach=True, **cfg)
+    assert torch.allclose(ld, l1, atol=1e-6)  # same value...
+    y = emb.clone().requires_grad_(True)
+    loss_d, _ = loss_of(y, labels, scale_detach=True, **cfg)
+    loss_d.sum().backward()
+    assert ((y.grad * y).sum() / (y.grad.norm() * y.norm())).abs() > 1e-3  # ...but a radial gradient
+
+
+def test_rejects_bad_v2_args():
+    for cfg in [dict(scale_reference='all'), dict(tail_frac=0.0), dict(tail_frac=1.5)]:
+        try:
+            OpenPairLoss(**cfg)
+        except ValueError:
+            continue
+        raise AssertionError(f'{cfg} must raise')
+
+
+# --- nm_sequences (idea 3a) ---
+
+def reference_seq(emb, labels, num_folds=4, margin=0.2):
+    """Literal loops: d_nm = min over the fold templates and every sequence of the non-fold subjects; 'mean'."""
+    uniq = torch.unique(labels)
+    terms = []
+    for fold in torch.chunk(uniq, num_folds):
+        G, gl, pm, pu = OpenPairLoss.split_fold(labels, uniq, fold)
+        gal = torch.stack([emb[i].mean(0) for i in G]).permute(2, 0, 1)
+        gl = torch.stack(gl)
+        known = [i for i in range(len(labels)) if labels[i].item() not in fold.tolist()]
+        cand = torch.cat([gal, emb[known].permute(2, 0, 1)], 1)  # [p, n_g + n_k, c]
+        dm = compute_distance(gal, emb[pm].permute(2, 0, 1))
+        du = compute_distance(cand, emb[pu].permute(2, 0, 1))
+        for a, xm in enumerate(pm):
+            gi = (gl == labels[xm]).nonzero().item()
+            for b in range(len(pu)):
+                terms.append(torch.relu(dm[:, gi, a] - du[:, :, b].min(1)[0] + margin))
+    return torch.stack(terms, 1).mean(1)
+
+
+def test_nm_sequences_matches_formula():
+    emb, labels = batch(noise=1.0, perm=True, seed=7)
+    emb, labels = emb[:64], labels[:64]
+    loss, info = loss_of(emb, labels, reduction='mean', nm_sequences=True)
+    assert torch.allclose(loss, reference_seq(emb, labels), atol=1e-5)
+    assert (info['d_nm_min'] <= info['d_nm_min_tmpl'] + 1e-6).all()
+    assert (info['nm_from_seq'] > 0).all()
+
+
+def test_nm_sequences_off_equals_plain_and_grads():
+    emb, labels = batch(noise=1.0, perm=True)
+    plain, _ = loss_of(emb, labels)
+    off, _ = loss_of(emb, labels, nm_sequences=False)
+    assert torch.allclose(plain, off)
+    x = emb.clone().requires_grad_(True)
+    loss, info = loss_of(x, labels, nm_sequences=True, scale_reference='genuine', tail_frac=0.25)
+    loss.sum().backward()
+    assert torch.isfinite(x.grad).all() and x.grad.abs().sum() > 0
+    l3, _ = loss_of(3.0 * emb, labels, nm_sequences=True, scale_reference='genuine', tail_frac=0.25)
+    assert torch.allclose(loss.detach(), l3, atol=1e-5)  # still scale invariant
 
 
 if __name__ == '__main__':
