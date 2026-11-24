@@ -1,0 +1,126 @@
+# GaitBase + Triplet + CE + open-pair loss v2.a (lambda = 0.5) on GREW, for siroco/poniente (4 GPUs).
+# Recipe identical to GaitBase_GREW_OpenPair_picasso.yaml (open-pair v1 on GREW, picasso job 3767125): OpenGait's
+# gaitbase_da_grew.yaml (SGD lr 0.1, MultiStepLR 80k/120k/150k, 180k iterations, 20-40 frames, sync_BN) with Su's
+# sampler (TripletNoRepeatSampler 32x4 + TripletLossSu), local test split + evaluate_GREW, 4 GPUs x 32 sequences
+# (same global batch as 8 x 16). Only differences: the open-pair loss is v2.a (scale_reference genuine, tail_frac 0.25, nm_sequences), dataset_root (siroco/poniente) and save_name.
+data_cfg:
+  dataset_name: GREW
+  dataset_root: /home/GAIT_local/SSD_grande/GREW-pkl/
+  dataset_partition: ./datasets/GREW/GREW_local_test.json # same TRAIN_SET as GREW.json; local test split
+  num_workers: 4
+  remove_no_gallery: false # Remove probe if no gallery for it
+  test_dataset_name: GREW
+
+evaluator_cfg:
+  enable_float16: true
+  restore_ckpt_strict: true
+  restore_hint: 180000
+  save_name: GaitBase_GREW_OpenPair_v2a
+  eval_func: evaluate_GREW # closed + open-set metrics on the local split (GREW_submission only writes a file)
+  sampler:
+    batch_shuffle: false
+    batch_size: 4 # number of GPUs
+    sample_type: all_ordered # all indicates whole sequence used to test, while ordered means input sequence by its natural order; Other options:   fixed_unordered
+    frames_all_limit: 720 # limit the number of sampled frames to prevent out of memory
+  metric: euc # cos
+  transform:
+    - type: BaseSilCuttingTransform
+
+loss_cfg:
+  - loss_term_weight: 1.0
+    margin: 0.2
+    type: TripletLossSu # Su's triplet: anchor by anchor, for unbalanced batches (TripletNoRepeatSampler)
+    log_prefix: triplet
+  - loss_term_weight: 1.0
+    scale: 16
+    type: CrossEntropyLoss
+    log_prefix: softmax
+    log_accuracy: true
+  # open-pair loss v2.a (lambda = 0.5): genuine scale + intruder tail + individual sequences as candidates
+  - loss_term_weight: 0.5
+    type: OpenPairLoss
+    num_folds: 4
+    margin: 0.2
+    reduction: nonzero
+    scale_reference: genuine # idea 1: relative margin, scale invariant
+    scale_detach: false
+    tail_frac: 0.25 # idea 2: hardest 25 % of the intruders of each fold
+    nm_sequences: true # idea 3a: nearest gallery item among templates + individual known sequences
+    log_prefix: open_set
+model_cfg:
+  model: Baseline
+  backbone_cfg:
+    type: ResNet9
+    block: BasicBlock
+    channels: # Layers configuration for automatically model construction
+      - 64
+      - 128
+      - 256
+      - 512
+    layers:
+      - 1
+      - 1
+      - 1
+      - 1
+    strides:
+      - 1
+      - 2
+      - 2
+      - 1
+    maxpool: false
+  SeparateFCs:
+    in_channels: 512
+    out_channels: 256
+    parts_num: 16
+  SeparateBNNecks:
+    class_num: 20000
+    in_channels: 256
+    parts_num: 16
+  bin_num:
+    - 16
+  open_set_loss: true # feed embed_1 to the open-pair loss
+optimizer_cfg:
+  lr: 0.1
+  momentum: 0.9
+  solver: SGD
+  weight_decay: 0.0005
+
+scheduler_cfg:
+  gamma: 0.1
+  milestones: # Learning Rate Reduction at each milestones
+    - 80000
+    - 120000
+    - 150000
+  scheduler: MultiStepLR
+trainer_cfg:
+  enable_float16: true # half_percesion float for memory reduction and speedup
+  fix_BN: false
+  with_test: false
+  log_iter: 100
+  tb_scalar_iter: 1 # every loss scalar to TensorBoard each iteration
+  restore_ckpt_strict: true
+  restore_hint: 0
+  save_iter: 10000 # (OpenGait: 60000)
+  save_name: GaitBase_GREW_OpenPair_v2a
+  sync_BN: true
+  total_iter: 180000
+  sampler:
+    batch_shuffle: true
+    batch_size:
+      - 32 # TripletSampler, batch_size[0] indicates Number of Identity
+      - 4 #                 batch_size[1] indicates Samples sequqnce for each Identity
+    frames_num_fixed: 30 # fixed frames number for training
+    frames_num_max: 40 # max frames number for unfixed training
+    frames_num_min: 20 # min frames number for unfixed traing
+    sample_type: unfixed_unordered # fixed control input frames number, unordered for controlling order of input tensor; Other options: unfixed_ordered or all_ordered
+    type: TripletNoRepeatSampler # Su's sampler: no repeated sequences (OpenGait's TripletSampler repeats them)
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: RandomPerspective
+          prob: 0.2
+        - type: BaseSilCuttingTransform
+        - type: RandomHorizontalFlip
+          prob: 0.2
+        - type: RandomRotate
+          prob: 0.2
