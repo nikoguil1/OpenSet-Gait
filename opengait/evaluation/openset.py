@@ -54,8 +54,11 @@ SU2024_CFG = {
     'threshold_rule': 'su2024',
 }
 
-# Non-mated subject sets released by Su et al. (datasets/Gait3D/openset_nonmated.npy, converted to IDs)
-SU2024_SPLITS = {'Gait3D': 'datasets/Gait3D/su2024_nonmated_ids.json'}
+# Non-mated subject sets released by Su et al. (openset_nonmated.npy per dataset, converted to IDs)
+SU2024_SPLITS = {'Gait3D': 'datasets/Gait3D/su2024_nonmated_ids.json',
+                 # GREW: Su's file lists the 1288 MATED subjects (confirmed by the authors, 2026-11-25);
+                 # the json stores the complement as nonmated_ids (78.5 % non-mated, gallery 01 / probe 02)
+                 'GREW': 'datasets/GREW/su2024_nonmated_ids.json'}
 
 
 def make_splits(probe_lbls, unknown_ratio, n_splits, seed):
