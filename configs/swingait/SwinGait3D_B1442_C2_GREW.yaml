@@ -1,0 +1,106 @@
+# SwinGait-3D on GREW, stage 2 of OpenGait's official recipe (swingait3D_B1442C2_GREW.yaml), siroco 4 x RTX 3090.
+# Initialised from our stage-1 DeepGaitV2_B1441_C2_P3D-180000.pt (strict false, optimizer reset), 200k iterations,
+# AdamW 3e-4, TripletSampler 32 x 4, 30 fixed frames, TripletLoss + CE (no open-set loss): variant (a), the control
+# that should reach OpenGait's official 79.3 R1 on CodaLab. Changes vs the official config: dataset_root,
+# local partition (GREW_local_test.json: same train set; test = gallery 01 / probe 02), evaluator evaluate_GREW
+# (su2024 protocol with Su's GREW splits), num_workers 4, save_iter 20000, save_name, use_checkpoint; 4 GPUs x 32 (theirs 8 x 16).
+data_cfg:
+  dataset_name: GREW
+  dataset_root: /home/GAIT_local/SSD_grande/GREW-pkl/
+  dataset_partition: ./datasets/GREW/GREW_local_test.json
+  num_workers: 4
+  remove_no_gallery: false # Remove probe if no gallery for it
+  test_dataset_name: GREW
+
+evaluator_cfg:
+  enable_float16: true
+  restore_ckpt_strict: true
+  restore_hint: 200000
+  save_name: SwinGait3D_B1442_C2_GREW
+  sampler:
+    batch_shuffle: false
+    batch_size: 4 # number of GPUs
+    sample_type: all_ordered # all indicates whole sequence used to test, while ordered means input sequence by its natural order; Other options:   fixed_unordered
+    frames_all_limit: 720 # limit the number of sampled frames to prevent out of memory
+  eval_func: evaluate_GREW
+  metric: euc # cos
+  transform:
+    - type: BaseSilCuttingTransform
+
+loss_cfg:
+  - loss_term_weight: 1.0
+    margin: 0.2
+    type: TripletLoss
+    log_prefix: triplet
+  - loss_term_weight: 1.0
+    scale: 16
+    type: CrossEntropyLoss
+    log_prefix: softmax
+    log_accuracy: true
+
+model_cfg:
+  model: SwinGait
+  use_checkpoint: true # gradient checkpointing in the Swin blocks: 4 x 32 seqs do not fit in 24 GB without it
+  Backbone:
+    mode: p3d
+    in_channels: 1
+    layers:
+      - 1
+      - 4
+      - 4
+      - 2
+    channels:
+      - 64
+      - 128
+  bin_num: 
+    - 15
+  SeparateBNNecks:
+    in_channels: 256
+    class_num: 20000
+    parts_num: 16
+
+optimizer_cfg:
+  lr: 0.0003
+  solver: AdamW
+  weight_decay: 0.02
+
+scheduler_cfg:
+  gamma: 0.1
+  milestones: # Learning Rate Reduction at each milestones
+    - 100000000
+  scheduler: MultiStepLR
+
+trainer_cfg:
+  enable_float16: true # half_percesion float for memory reduction and speedup
+  fix_BN: false
+  log_iter: 100
+  with_test: false
+  optimizer_reset: True
+  restore_ckpt_strict: false
+  restore_hint: ./output/GREW/DeepGaitV2/DeepGaitV2_B1441_C2_P3D/checkpoints/DeepGaitV2_B1441_C2_P3D-180000.pt
+  save_iter: 20000
+  save_name: SwinGait3D_B1442_C2_GREW
+  sync_BN: true
+  T_max_iter: 150000
+  total_iter: 200000
+  sampler:
+    batch_shuffle: true
+    batch_size:
+      - 32 # TripletSampler, batch_size[0] indicates Number of Identity
+      - 4 #                 batch_size[1] indicates Samples sequqnce for each Identity
+    frames_num_fixed: 30 # fixed frames number for training
+    frames_skip_num: 4
+    sample_type: fixed_ordered # fixed control input frames number, unordered for controlling order of input tensor; Other options: unfixed_ordered or all_ordered
+    type: TripletSampler
+  transform:
+    - type: Compose
+      trf_cfg:
+        - type: RandomPerspective
+          prob: 0.2
+        - type: BaseSilCuttingTransform
+        - type: RandomHorizontalFlip
+          prob: 0.2
+        - type: RandomRotate
+          prob: 0.2
+
+

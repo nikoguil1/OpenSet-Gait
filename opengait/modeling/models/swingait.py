@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.utils.checkpoint as checkpoint  # used by the Swin blocks when use_checkpoint is on (missing upstream)
 from ..base_model import BaseModel
 from ..modules import HorizontalPoolingPyramid, PackSequenceWrapper, SeparateFCs, SeparateBNNecks, SetBlockWrapper, ParallelBN1d
 
@@ -813,8 +814,10 @@ class SwinGait(BaseModel):
             num_heads = [16, 32], 
             window_size = [3, 3, 5], 
             downsample = [1, 0], 
-            drop_path_rate = 0.1, 
-            patch_norm = True, 
+            drop_path_rate = 0.1,
+            patch_norm = True,
+            # Optional gradient checkpointing in the Swin blocks (memory only; same outputs). Default off as in OpenGait.
+            use_checkpoint = model_cfg.get('use_checkpoint', False),
         )
 
         self.FCs = SeparateFCs(model_cfg['SeparateBNNecks']['parts_num'], in_channels=512, out_channels=256)
