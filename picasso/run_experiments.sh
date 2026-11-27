@@ -93,11 +93,23 @@ sed "s|DATASET_ROOT|$DATASET_ROOT|" "$CFG_FILE" > "$JOB_CFG"
 
 if [ "$PHASE" = "train" ]; then
     SAVE_NAME=$(python -c "import yaml,sys; c=yaml.safe_load(open(sys.argv[1])); print(c['trainer_cfg']['save_name'])" "$JOB_CFG" | tail -1)
-    LAST_CKPT=$(ls output/*/*/"$SAVE_NAME"/checkpoints/"$SAVE_NAME"-*.pt 2>/dev/null | sort | tail -1 || true)
+    # numeric sort on the iteration (a plain sort puts -90000 after -100000)
+    LAST_CKPT=$(ls output/*/*/"$SAVE_NAME"/checkpoints/"$SAVE_NAME"-*.pt 2>/dev/null \
+                | awk -F- '{n=$NF; sub(/\.pt$/,"",n); print n+0, $0}' | sort -n | tail -1 | cut -d' ' -f2- || true)
     if [ -n "$LAST_CKPT" ]; then
         RESTORE=$((10#$(basename "$LAST_CKPT" .pt | sed 's/.*-//')))
-        # trainer_cfg is the only section with restore_hint: 0
-        sed -i "s|^\(  restore_hint:\) 0\b.*|\1 $RESTORE|" "$JOB_CFG"
+        # Resume from our own checkpoint: trainer_cfg.restore_hint = iteration (whatever it was: 0 or a path to an
+        # init checkpoint, e.g. DeepGaitV2 for SwinGait stage 2) and keep the saved optimizer/scheduler state.
+        python - "$JOB_CFG" "$RESTORE" <<'PYEOF'
+import sys, yaml
+path, it = sys.argv[1], int(sys.argv[2])
+cfg = yaml.safe_load(open(path))
+cfg['trainer_cfg']['restore_hint'] = it
+cfg['trainer_cfg']['optimizer_reset'] = False
+cfg['trainer_cfg']['scheduler_reset'] = False
+cfg['trainer_cfg']['restore_ckpt_strict'] = True
+yaml.safe_dump(cfg, open(path, 'w'), sort_keys=False)
+PYEOF
         echo "Resuming from $LAST_CKPT (iteration $RESTORE)"
     fi
 fi

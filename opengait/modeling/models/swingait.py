@@ -791,6 +791,8 @@ class SwinGait(BaseModel):
         super(SwinGait, self).__init__(cfgs, training=training)
 
     def build_network(self, model_cfg):
+        # Optional open-set loss branch (OSL / OpenPair) on the triplet embeddings, as in DeepGaitV2. Default off.
+        self.open_set_loss = model_cfg.get('open_set_loss', False)
         channels = model_cfg['Backbone']['channels']
         layers   = model_cfg['Backbone']['layers']
         in_c     = model_cfg['Backbone']['in_channels']
@@ -929,6 +931,8 @@ class SwinGait(BaseModel):
                 'embeddings': embed
             }
         }
+        if self.open_set_loss:
+            retval['training_feat']['open_set'] = {'embeddings': embed_1, 'labels': labs}
         return retval
 
 import math
